@@ -10,3 +10,8 @@ venv/
 report.md
 report.html
 report.json
+scan-result.json
+sentinelai-report.html
+sentinelai-report.md
+sentinelai-results.sarif
+*.sarif

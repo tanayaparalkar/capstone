@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SentinelAI Security Report - {{ repository.name }}</title>
+<style>
+  :root {
+    --color-critical: #dc2626;
+    --color-high: #ea580c;
+    --color-medium: #ca8a04;
+    --color-low: #2563eb;
+    --color-bg: #f9fafb;
+    --color-surface: #ffffff;
+    --color-border: #e5e7eb;
+    --color-text: #1f2937;
+    --color-muted: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--color-bg);
+    color: var(--color-text);
+    margin: 0;
+    padding: 0;
+    line-height: 1.5;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px 20px 64px; }
+
+  header.report-header { background: #111827; color: #f9fafb; padding: 24px 20px; }
+  header.report-header .brand { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #9ca3af; }
+  header.report-header h1 { margin: 4px 0 12px; font-size: 24px; }
+  header.report-header .meta { display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; color: #d1d5db; }
+  header.report-header .meta strong { color: #f9fafb; }
+
+  h2 { font-size: 19px; margin: 40px 0 16px; border-bottom: 2px solid var(--color-border); padding-bottom: 8px; }
+  h3 { font-size: 15px; margin: 0 0 8px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+  .card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; padding: 16px; border-top: 4px solid var(--color-muted); }
+  .card .value { font-size: 26px; font-weight: 700; }
+  .card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-muted); margin-top: 4px; }
+  .card.critical { border-top-color: var(--color-critical); }
+  .card.high { border-top-color: var(--color-high); }
+  .card.medium { border-top-color: var(--color-medium); }
+  .card.low { border-top-color: var(--color-low); }
+
+  .bars { display: flex; flex-direction: column; gap: 8px; }
+  .bar-row { display: grid; grid-template-columns: 130px 1fr 40px; align-items: center; gap: 8px; font-size: 13px; }
+  .bar-track { background: #e5e7eb; border-radius: 4px; height: 12px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; }
+  .bar-fill.critical { background: var(--color-critical); }
+  .bar-fill.high { background: var(--color-high); }
+  .bar-fill.medium { background: var(--color-medium); }
+  .bar-fill.low { background: var(--color-low); }
+  .bar-fill.neutral { background: #4b5563; }
+  .bar-row .count { text-align: right; }
+
+  .distribution-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+  @media (max-width: 700px) { .distribution-grid { grid-template-columns: 1fr; } }
+
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; }
+  th, td { text-align: left; padding: 10px 12px; font-size: 13px; border-bottom: 1px solid var(--color-border); white-space: nowrap; }
+  th { background: #f3f4f6; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; color: var(--color-muted); }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.03em; color: white; white-space: nowrap; }
+  .badge.critical { background: var(--color-critical); }
+  .badge.high { background: var(--color-high); }
+  .badge.medium { background: var(--color-medium); }
+  .badge.low { background: var(--color-low); }
+  .badge.pending, .badge.unverified, .badge.insufficient_evidence { background: #9ca3af; }
+  .badge.verified { background: #16a34a; }
+  .badge.rejected { background: #dc2626; }
+
+  .finding-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; padding: 20px; margin-bottom: 16px; scroll-margin-top: 16px; }
+  .finding-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .finding-card-header h3 { margin: 0; }
+  .finding-card-header .fid { font-family: "SFMono-Regular", Consolas, monospace; color: var(--color-muted); font-size: 13px; margin-left: auto; }
+
+  dl.kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 13px; margin: 0 0 16px; }
+  dl.kv dt { color: var(--color-muted); }
+  dl.kv dd { margin: 0; word-break: break-word; }
+
+  .section-label { font-weight: 600; font-size: 13px; margin: 16px 0 6px; }
+  p { margin: 0 0 8px; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 12px 14px; border-radius: 6px; overflow-x: auto; font-size: 12.5px; white-space: pre; margin: 0; }
+  code { font-family: "SFMono-Regular", Consolas, monospace; }
+
+  .ai-unavailable { color: var(--color-muted); font-style: italic; font-size: 13px; margin-top: 12px; }
+
+  .confidence-meter { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .confidence-track { flex: 1 1 160px; max-width: 200px; background: #e5e7eb; border-radius: 4px; height: 10px; overflow: hidden; }
+  .confidence-fill { height: 100%; background: #16a34a; }
+
+  ul.reference-list { margin: 0; padding-left: 20px; font-size: 13px; }
+  .related-list a, .related-list code { margin-right: 10px; }
+
+  footer { margin-top: 48px; font-size: 12px; color: var(--color-muted); text-align: center; }
+
+  @media (max-width: 600px) {
+    dl.kv { grid-template-columns: 1fr; }
+    .bar-row { grid-template-columns: 100px 1fr 36px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="report-header">
+  <div class="container">
+    <div class="brand">SentinelAI</div>
+    <h1>Security Analysis Report</h1>
+    <div class="meta">
+      <span><strong>Repository:</strong> {{ repository.name }}</span>
+      <span><strong>Mode:</strong> {{ stats.scan_mode }}</span>
+      <span><strong>Timestamp:</strong> {{ stats.timestamp.isoformat() }}</span>
+    </div>
+  </div>
+</header>
+
+<div class="container">
+
+  <section id="executive-summary">
+    <h2>Executive Summary</h2>
+    <div class="cards">
+      <div class="card"><div class="value">{{ stats.total_findings }}</div><div class="label">Total Findings</div></div>
+      <div class="card critical"><div class="value">{{ stats.critical_findings }}</div><div class="label">Critical</div></div>
+      <div class="card high"><div class="value">{{ stats.high_findings }}</div><div class="label">High</div></div>
+      <div class="card medium"><div class="value">{{ stats.medium_findings }}</div><div class="label">Medium</div></div>
+      <div class="card low"><div class="value">{{ stats.low_findings }}</div><div class="label">Low</div></div>
+      <div class="card">
+        <div class="value" style="font-size:17px;">{{ stats.ai_enrichment_status.value|capitalize }}</div>
+        <div class="label">AI Enrichment</div>
+      </div>
+    </div>
+
+    {% if severity_bars %}
+    <h3 style="margin-top:28px;">Severity Distribution</h3>
+    <div class="bars">
+      {% for bar in severity_bars %}
+      <div class="bar-row">
+        <span>{{ bar.label }}</span>
+        <div class="bar-track"><div class="bar-fill {{ bar.key }}" style="width: {{ bar.percent }}%;"></div></div>
+        <span class="count">{{ bar.count }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+
+  <section id="scan-information">
+    <h2>Scan Information</h2>
+    <dl class="kv" style="grid-template-columns: 170px 1fr; max-width: 640px;">
+      <dt>Repository Name</dt><dd>{{ repository.name }}</dd>
+      <dt>Repository Path</dt><dd>{{ repository.path }}</dd>
+      <dt>Scan Mode</dt><dd>{{ stats.scan_mode }}</dd>
+      <dt>Timestamp</dt><dd>{{ stats.timestamp.isoformat() }}</dd>
+      <dt>Duration</dt>
+      <dd>{% if stats.duration_seconds is not none %}{{ "%.2fs"|format(stats.duration_seconds) }}{% else %}unavailable{% endif %}</dd>
+      {% if repository.commit_hash %}<dt>Commit</dt><dd>{{ repository.commit_hash }}</dd>{% endif %}
+      {% if repository.branch %}<dt>Branch</dt><dd>{{ repository.branch }}</dd>{% endif %}
+      {% if repository.languages %}<dt>Languages</dt><dd>{{ repository.languages|join(", ") }}</dd>{% endif %}
+    </dl>
+  </section>
+
+  {% if scanner_bars or category_bars %}
+  <section id="distribution">
+    <h2>Scanner &amp; Category Distribution</h2>
+    <div class="distribution-grid">
+      {% if scanner_bars %}
+      <div>
+        <h3>Findings by Scanner</h3>
+        <div class="bars">
+          {% for bar in scanner_bars %}
+          <div class="bar-row">
+            <span>{{ bar.label }}</span>
+            <div class="bar-track"><div class="bar-fill neutral" style="width: {{ bar.percent }}%;"></div></div>
+            <span class="count">{{ bar.count }}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+      {% if category_bars %}
+      <div>
+        <h3>Findings by Category</h3>
+        <div class="bars">
+          {% for bar in category_bars %}
+          <div class="bar-row">
+            <span>{{ bar.label }}</span>
+            <div class="bar-track"><div class="bar-fill neutral" style="width: {{ bar.percent }}%;"></div></div>
+            <span class="count">{{ bar.count }}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if findings %}
+  <section id="findings-overview">
+    <h2>Findings Overview</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">ID</th>
+            <th scope="col">Severity</th>
+            <th scope="col">Scanner</th>
+            <th scope="col">Category</th>
+            <th scope="col">Location</th>
+            <th scope="col">Rule</th>
+            <th scope="col">Confidence</th>
+            <th scope="col">Verification</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in findings %}
+          <tr>
+            <td><a href="#finding-{{ item.anchor }}"><code>{{ item.finding.finding_id }}</code></a></td>
+            <td><span class="badge {{ item.finding.severity.value }}">{{ item.finding.severity.value|upper }}</span></td>
+            <td>{{ item.finding.scanner }}</td>
+            <td>{{ item.finding.category }}</td>
+            <td>{{ item.location }}</td>
+            <td><code>{{ item.finding.rule_id }}</code></td>
+            <td>
+              {% if item.ai %}<span class="badge {{ item.ai.confidence_label.value }}">{{ item.ai.confidence_label.value|upper }}</span>
+              {% else %}<span class="badge pending">PENDING</span>{% endif %}
+            </td>
+            <td>
+              {% if item.ai %}<span class="badge {{ item.ai.verification_status.value }}">{{ item.ai.verification_status.value|upper }}</span>
+              {% else %}&mdash;{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="detailed-findings">
+    <h2>Detailed Findings</h2>
+    {% for item in findings %}
+    <article class="finding-card" id="finding-{{ item.anchor }}">
+      <div class="finding-card-header">
+        <span class="badge {{ item.finding.severity.value }}">{{ item.finding.severity.value|upper }}</span>
+        <h3>{{ item.finding.category }}</h3>
+        <span class="fid">{{ item.finding.finding_id }}</span>
+      </div>
+
+      <dl class="kv">
+        <dt>Scanner</dt><dd>{{ item.finding.scanner }}</dd>
+        <dt>Rule</dt><dd><code>{{ item.finding.rule_id }}</code></dd>
+        <dt>Location</dt><dd>{{ item.location }}</dd>
+        {% if item.finding.cwe %}<dt>CWE</dt><dd>{{ item.finding.cwe }}</dd>{% endif %}
+      </dl>
+
+      <div class="section-label">Description</div>
+      <p>{{ item.finding.message }}</p>
+
+      {% if item.finding.raw_evidence %}
+      <div class="section-label">Evidence</div>
+      <pre><code>{{ item.finding.raw_evidence }}</code></pre>
+      {% endif %}
+
+      {% if item.ai %}
+        <div class="section-label">AI Explanation</div>
+        <p>{{ item.ai.explanation }}</p>
+
+        {% if item.ai.exploit_path %}
+        <div class="section-label">Exploit Path</div>
+        <p>{{ item.ai.exploit_path }}</p>
+        {% endif %}
+
+        {% if item.ai.impact %}
+        <div class="section-label">Impact</div>
+        <p>{{ item.ai.impact }}</p>
+        {% endif %}
+
+        <div class="section-label">Remediation</div>
+        <p>{{ item.ai.remediation }}</p>
+
+        {% if item.ai.patch_suggestion %}
+        <div class="section-label">Patch Suggestion</div>
+        <pre><code>{{ item.ai.patch_suggestion }}</code></pre>
+        {% endif %}
+
+        <div class="section-label">Confidence</div>
+        <div class="confidence-meter">
+          <div class="confidence-track"><div class="confidence-fill" style="width: {{ item.ai_confidence_percent }}%;"></div></div>
+          <span>{{ item.ai_confidence_percent }}% &middot; <span class="badge {{ item.ai.confidence_label.value }}">{{ item.ai.confidence_label.value|upper }}</span></span>
+        </div>
+
+        <div class="section-label">Verification</div>
+        <p>
+          <span class="badge {{ item.ai.verification_status.value }}">{{ item.ai.verification_status.value|upper }}</span>
+          {{ item.ai.verification_status.value|replace("_", " ") }}
+        </p>
+
+        {% if item.related %}
+        <div class="section-label">Related Findings</div>
+        <p class="related-list">
+          {% for rel in item.related %}
+            {% if rel.anchor %}<a href="#finding-{{ rel.anchor }}"><code>{{ rel.id }}</code></a>{% else %}<code>{{ rel.id }}</code>{% endif %}
+          {% endfor %}
+        </p>
+        {% endif %}
+
+        {% if item.references %}
+        <div class="section-label">References</div>
+        <ul class="reference-list">
+          {% for ref in item.references %}
+            <li>{% if ref.url %}<a href="{{ ref.url }}" target="_blank" rel="noopener noreferrer">{{ ref.text }}</a>{% else %}{{ ref.text }}{% endif %}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      {% else %}
+        <p class="ai-unavailable">AI enrichment unavailable for this finding.</p>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </section>
+  {% else %}
+  <section id="findings-overview">
+    <h2>Findings</h2>
+    <p>No findings were reported for this scan.</p>
+  </section>
+  {% endif %}
+
+  <footer>
+    Generated by SentinelAI &middot; static, self-contained, offline-capable report
+  </footer>
+</div>
+</body>
+</html>
