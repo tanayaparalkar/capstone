@@ -1,0 +1,92 @@
+[
+  {
+    "id": "KB-SECRET-EXPOSURE-001",
+    "category": "secret-exposure",
+    "cwe": "CWE-798",
+    "vulnerable_pattern": "A credential (API key, access key, password, or token) is hardcoded as a literal string in source code instead of being loaded from a secret store or environment variable.",
+    "exploit_condition": "Anyone with read access to the repository or its history - including a leaked clone, a public fork, or a CI log - can extract the credential and use it directly.",
+    "remediation_guidance": "Revoke the exposed credential immediately, move credentials to environment variables or a secrets manager (e.g. AWS Secrets Manager, HashiCorp Vault), and add a pre-commit secret scanner (e.g. GitLeaks) to block future commits.",
+    "references": ["https://cwe.mitre.org/data/definitions/798.html"]
+  },
+  {
+    "id": "KB-SQL-INJECTION-001",
+    "category": "sql-injection",
+    "cwe": "CWE-89",
+    "vulnerable_pattern": "User-supplied input is concatenated or interpolated directly into a SQL query string instead of being passed as a bound parameter.",
+    "exploit_condition": "An attacker who controls the interpolated value can inject SQL syntax (e.g. `' OR '1'='1' --`) to alter the query's logic, bypass authentication, or exfiltrate data.",
+    "remediation_guidance": "Use parameterized queries or an ORM's query-building API instead of string concatenation; never interpolate user input directly into a SQL string.",
+    "references": ["https://cwe.mitre.org/data/definitions/89.html", "https://owasp.org/www-community/attacks/SQL_Injection"]
+  },
+  {
+    "id": "KB-COMMAND-INJECTION-001",
+    "category": "command-injection",
+    "cwe": "CWE-78",
+    "vulnerable_pattern": "User-supplied input is passed into a shell command (e.g. os.system, subprocess with shell=True) without sanitization, allowing shell metacharacters to be interpreted.",
+    "exploit_condition": "An attacker supplying input containing shell metacharacters (e.g. `; rm -rf /`) can cause arbitrary commands to execute with the privileges of the running process.",
+    "remediation_guidance": "Avoid shell=True and os.system() with user input; use subprocess.run() with an explicit argument list, and validate/allowlist any user-supplied values used in a command.",
+    "references": ["https://cwe.mitre.org/data/definitions/78.html"]
+  },
+  {
+    "id": "KB-VULNERABLE-DEPENDENCY-001",
+    "category": "vulnerable-dependency",
+    "cwe": "CWE-295",
+    "vulnerable_pattern": "A project dependency is pinned to a version with a publicly known vulnerability (e.g. improper certificate validation, remote code execution) that has since been patched upstream.",
+    "exploit_condition": "Depends on the specific CVE/advisory - typically exploitable by any party able to interact with the vulnerable dependency's affected code path (e.g. network requests, deserialization, file parsing).",
+    "remediation_guidance": "Upgrade the dependency to a patched version and re-run the dependency scan to confirm no other transitively vulnerable packages remain.",
+    "references": ["https://cwe.mitre.org/data/definitions/295.html"]
+  },
+  {
+    "id": "KB-WEAK-CRYPTOGRAPHY-001",
+    "category": "weak-cryptography",
+    "cwe": "CWE-327",
+    "vulnerable_pattern": "A cryptographically broken or outdated hashing/encryption algorithm (e.g. MD5, SHA-1, DES) is used for a security-sensitive purpose such as password storage.",
+    "exploit_condition": "An attacker with access to the hashed/encrypted values can recover the original input using precomputed tables, collision attacks, or brute force at a scale infeasible against a modern algorithm.",
+    "remediation_guidance": "Replace with a purpose-built algorithm for the use case (e.g. bcrypt/scrypt/Argon2 for passwords, AES-GCM for encryption), and rotate or rehash existing affected values.",
+    "references": ["https://cwe.mitre.org/data/definitions/327.html"]
+  },
+  {
+    "id": "KB-BROKEN-ACCESS-CONTROL-001",
+    "category": "broken-access-control",
+    "cwe": "CWE-862",
+    "vulnerable_pattern": "An endpoint or function that should require authentication or a specific role is missing the authorization check present on comparable endpoints elsewhere in the codebase.",
+    "exploit_condition": "Any user (including an unauthenticated one) who discovers the endpoint can invoke it directly, bypassing the access control the rest of the application assumes is in place.",
+    "remediation_guidance": "Apply the same authorization check/decorator used on comparable endpoints, and add a regression test asserting the unauthorized case is rejected.",
+    "references": ["https://cwe.mitre.org/data/definitions/862.html"]
+  },
+  {
+    "id": "KB-PATH-TRAVERSAL-001",
+    "category": "path-traversal",
+    "cwe": "CWE-22",
+    "vulnerable_pattern": "A user-supplied filename or path segment is joined onto a base directory and used to access the filesystem without normalizing or validating the result stays within that directory.",
+    "exploit_condition": "An attacker supplying a value containing `../` sequences can escape the intended base directory and read or write files elsewhere on the filesystem that the process has permission to access.",
+    "remediation_guidance": "Resolve the final path (e.g. os.path.realpath) and verify it is still inside the intended base directory before use; reject requests that fail this check.",
+    "references": ["https://cwe.mitre.org/data/definitions/22.html"]
+  },
+  {
+    "id": "KB-INSECURE-DESERIALIZATION-001",
+    "category": "insecure-deserialization",
+    "cwe": "CWE-502",
+    "vulnerable_pattern": "Data from an untrusted or externally-writable source (e.g. a shared cache, user upload, network message) is deserialized using a format capable of executing code during deserialization, such as Python's pickle.",
+    "exploit_condition": "An attacker who can influence the serialized payload (e.g. by writing to a shared cache backend) can craft a payload that executes arbitrary code when deserialized.",
+    "remediation_guidance": "Use a safe, data-only serialization format such as JSON. If a code-capable format is unavoidable, sign payloads (e.g. HMAC) and verify the signature before deserializing.",
+    "references": ["https://cwe.mitre.org/data/definitions/502.html"]
+  },
+  {
+    "id": "KB-MISCONFIGURATION-001",
+    "category": "misconfiguration",
+    "cwe": "CWE-489",
+    "vulnerable_pattern": "A debug or development-only setting (e.g. a framework's DEBUG flag) is left enabled with no environment guard, so it is also active in production.",
+    "exploit_condition": "Triggering an unhandled error in production surfaces an interactive debugger or verbose stack trace to the requester, which can leak source code, configuration, or in some cases allow code execution via the debugger console.",
+    "remediation_guidance": "Default debug settings to off and load them from an environment variable, so the value can never be silently left on in production.",
+    "references": ["https://cwe.mitre.org/data/definitions/489.html"]
+  },
+  {
+    "id": "KB-CROSS-SITE-SCRIPTING-001",
+    "category": "cross-site-scripting",
+    "cwe": "CWE-79",
+    "vulnerable_pattern": "A templating engine is configured with autoescaping disabled, or user-controlled content is rendered into HTML without escaping.",
+    "exploit_condition": "An attacker who can set the unescaped value (e.g. a profile bio) can embed a script tag that executes in the browser of anyone who views the rendered page, potentially exfiltrating session data.",
+    "remediation_guidance": "Enable autoescaping (the default in most modern template engines) or explicitly escape user-controlled values before rendering them into HTML.",
+    "references": ["https://cwe.mitre.org/data/definitions/79.html", "https://owasp.org/www-community/attacks/xss/"]
+  }
+]

@@ -7,6 +7,29 @@ dist/
 venv/
 .venv/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment / secrets - never commit real values
+.env
+.env.*
+
+# Logs
+*.log
+
 report.md
 report.html
 report.json

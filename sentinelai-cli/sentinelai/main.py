@@ -5,12 +5,18 @@ Two distinct workflows live here:
 
 - `scan`: retrieves a ScanResult from a FindingsProvider (today,
   MockFindingsProvider; once Nithanth's backend is ready, swapping to a
-  real provider means changing _get_provider() and nothing else) and
-  either renders it live (--format terminal) or writes a report.
+  real provider means changing _get_provider() and nothing else). If
+  Tanaya's AI layer is configured (SENTINELAI_AI_LLM_MODEL and
+  SENTINELAI_AI_EMBEDDING_MODEL both set), runs
+  sentinelai.ai.enrich_findings() over the scanner findings to populate
+  ai_findings; otherwise ai_findings stays empty, exactly as it always
+  has. Either way, renders the result live (--format terminal) or
+  writes a report.
 - `report`: reads a previously-saved JSON report back into a ScanResult
   (sentinelai/reporting/loader.py) and renders it. It NEVER calls a
-  FindingsProvider - no scanner, repository analysis, RAG, LLM
-  reasoning, or verification ever runs again for an existing result.
+  FindingsProvider and NEVER calls enrich_findings() - no scanner,
+  repository analysis, RAG, LLM reasoning, or verification ever runs
+  again for an existing result.
 
 Both commands share the same report generators (sentinelai/reporting/)
 and the same statistics engine (sentinelai/statistics/), so a report
@@ -39,6 +45,11 @@ import typer
 from rich.console import Console
 
 from . import __version__
+from .ai import enrich_findings
+from .ai.config import get_settings
+from .ai.confidence_scorer import score_confidence
+from .ai.factory import create_default_retriever, create_llm_generate_fn
+from .ai.verifier import verify_finding
 from .contracts import ScanMode, ScanResult, Severity
 from .core import ExitCode, exceeds_fail_on_threshold, filter_by_severity
 from .presentation import (
@@ -176,12 +187,26 @@ def scan(
     Findings currently come from MockFindingsProvider regardless of the
     path given - a real provider backed by Nithanth's scanner pipeline
     swaps in behind the same FindingsProvider interface once it's ready.
+    If both SENTINELAI_AI_LLM_MODEL and SENTINELAI_AI_EMBEDDING_MODEL are
+    configured, every scanner finding is then run through Tanaya's frozen
+    AI layer (sentinelai.ai.enrich_findings(), constructed via
+    sentinelai.ai.factory's create_default_retriever()/
+    create_llm_generate_fn()) to populate ai_findings before filtering,
+    statistics, and rendering. If either is unconfigured, AI enrichment
+    is skipped entirely and ai_findings stays empty - the same behavior
+    `scan` has always had - rather than failing the command.
 
     Exit codes: 0 on success (including when findings exist but
     --fail-on wasn't crossed), 1 if --fail-on's threshold was crossed,
     2 for invalid input (bad path/flags), 3 if the provider itself
     failed, 4 for an unexpected internal error. See
-    sentinelai/core/exit_codes.py for the full convention.
+    sentinelai/core/exit_codes.py for the full convention. AI enrichment
+    failures are a deliberate exception to this convention, but only
+    once AI is actually configured: they are not caught, wrapped, or
+    mapped to a named ExitCode - an unhandled exception from
+    enrich_findings() propagates as a raw Python traceback and Python's
+    default exit status, not one of the codes above. Missing
+    configuration is not treated as a failure at all - see above.
     """
     debug: bool = (ctx.obj or {}).get("debug", False)
     console = get_console()
@@ -242,6 +267,14 @@ def scan(
         _fail_from_exception("scan failed", exc, ExitCode.PROVIDER_ERROR, debug)
     elapsed = time.monotonic() - started
     result = result.model_copy(update={"metadata": result.metadata.model_copy(update={"duration_seconds": elapsed})})
+
+    settings = get_settings()
+    ai_configured = settings.llm_model is not None and settings.embedding_model is not None
+    if ai_configured:
+        ai_findings = enrich_findings(
+            result.scanner_findings, create_default_retriever(), create_llm_generate_fn(), score_confidence, verify_finding
+        )
+        result = result.model_copy(update={"ai_findings": ai_findings})
 
     if min_severity is not None:
         result = filter_by_severity(result, min_severity)

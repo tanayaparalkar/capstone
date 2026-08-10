@@ -24,7 +24,7 @@ build-backend = "setuptools.build_meta"
 include = ["sentinelai*"]
 
 [tool.setuptools.package-data]
-sentinelai = ["providers/mock_data/*.json", "reporting/templates/*.j2"]
+sentinelai = ["providers/mock_data/*.json", "reporting/templates/*.j2", "security_kb/data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
