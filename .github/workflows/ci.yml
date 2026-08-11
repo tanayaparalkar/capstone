@@ -6,10 +6,17 @@ name: SentinelAI CI
 # saved result (never re-scanning), enforce a --fail-on threshold, and
 # preserve all reports as artifacts regardless of outcome.
 #
-# Uses only MockFindingsProvider (the bundled sample dataset) - no
-# external scanner, LLM, or database API, and therefore no secrets or
-# API keys of any kind. See sentinelai-cli/README.md's "CI/CD
-# Integration" section for the equivalent commands to run locally.
+# `sentinelai scan` always uses LiveFindingsProvider (see
+# sentinelai/main.py's _get_provider() - there is no CLI flag or env var
+# to select MockFindingsProvider instead), which runs the real Semgrep,
+# Bandit, and GitLeaks scanners against the checked-out repository via
+# subprocess. The "Install scanner tools" step below installs exactly
+# those three so this step can actually succeed. No LLM or database API
+# is involved - AI enrichment only runs when SENTINELAI_AI_LLM_MODEL and
+# SENTINELAI_AI_EMBEDDING_MODEL are set, which this workflow never does -
+# so this job still requires no secrets or API keys of any kind. See
+# sentinelai-cli/README.md's "CI/CD Integration" section for the
+# equivalent commands to run locally.
 
 "on":
   push:
@@ -43,6 +50,28 @@ jobs:
 
       - name: Run test suite
         run: pytest -v
+
+      # LiveFindingsProvider's default scanner registry (see
+      # sentinelai/providers/live_provider.py's _default_registry())
+      # shells out to these three executables by their bare name -
+      # without this step, "Run SentinelAI scan" below fails with
+      # PROVIDER_ERROR because the first missing tool aborts the whole
+      # scan (ScannerOrchestrator fails closed on the first failure).
+      - name: Install scanner tools (Semgrep, Bandit, GitLeaks)
+        env:
+          # Pinned, not "latest": CI should be deterministic - a new
+          # GitLeaks release should never silently change what this job
+          # runs. Bump deliberately, on purpose, when there's a reason to.
+          GITLEAKS_VERSION: "8.24.3"
+        run: |
+          python -m pip install semgrep bandit
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          rm gitleaks.tar.gz
+          semgrep --version
+          bandit --version
+          gitleaks version
 
       # SentinelAI's own --fail-on threshold can legitimately exit 1
       # (SECURITY_FINDINGS). That must not be treated as a broken CI
