@@ -28,22 +28,26 @@ never InMemoryRetriever/EmbeddingFn/security_kb), and generate's output
 is already validated into LLMResponse by explain() before this file
 ever sees it.
 
-No exception handling: every stage's failure propagates out of
-enrich_findings() uncaught. Deciding what an acceptable partial failure
-looks like, what to log, or what a caller should be told is a policy
-decision "orchestrator only, no business logic" leaves to whoever calls
-this function - and this file has no logging of its own to make a
-swallowed failure visible in the first place.
+No exception handling in the sense of recovery: a per-finding try/except
+logs which finding_id was being processed and then re-raises the
+original exception unchanged (`raise` with no argument), so every
+stage's failure still propagates out of enrich_findings() exactly as
+before - the try/except exists only to make the failure point visible
+in the log, not to swallow, wrap, or otherwise handle it. Deciding what
+an acceptable partial failure looks like, or what a caller should be
+told, remains a policy decision "orchestrator only, no business logic"
+leaves to whoever calls this function.
 
 repository_context defaults to RepositoryContext() when not supplied -
 the one construction this file does perform, safe because
-RepositoryContext is this module's own interim placeholder type, not a
-provider choice. settings = get_settings() is read here, not in any
+RepositoryContext is this module's own minimal, AI-layer-owned type,
+not a provider choice. settings = get_settings() is read here, not in any
 stage function, because the orchestrator is the correct layer for
 configuration to enter the system - retrieval_top_k and
 enable_verification are orchestration decisions (how much to retrieve,
 whether to run a stage at all), not stage-internal logic.
 """
+import logging
 from typing import Callable, Optional
 
 from sentinelai.contracts import AIEnrichedFinding, ConfidenceLabel, ScannerFinding, VerificationStatus
@@ -54,6 +58,10 @@ from .llm_response import LLMResponse
 from .prompt_builder import build_prompt
 from .repository_context import RepositoryContext
 from .retrieval import RetrievedChunk, Retriever, retrieve_context
+
+# Silent by default (no handler configured here), same convention and
+# logger name as sentinelai.main / sentinelai.providers.live_provider.
+logger = logging.getLogger("sentinelai")
 
 ConfidenceScorerFn = Callable[[ScannerFinding, list[RetrievedChunk]], tuple[float, ConfidenceLabel]]
 VerifierFn = Callable[[ScannerFinding, LLMResponse], VerificationStatus]
@@ -109,16 +117,27 @@ def enrich_findings(
 ) -> list[AIEnrichedFinding]:
     ctx = repository_context or RepositoryContext()
     settings = get_settings()
+    logger.info(
+        "AI pipeline: enriching %d findings (verification=%s)",
+        len(scanner_findings),
+        "enabled" if settings.enable_verification else "disabled",
+    )
 
     results = []
     for finding in scanner_findings:
-        chunks = retrieve_context(finding, ctx, retriever, settings.retrieval_top_k)
-        prompt = build_prompt(finding, ctx, chunks)
-        llm_response = explain(prompt, generate)
-        confidence_score, confidence_label = score_confidence(finding, chunks)
-        if settings.enable_verification:
-            verification_status = verify_finding(finding, llm_response)
-        else:
-            verification_status = VerificationStatus.UNVERIFIED
-        results.append(_assemble(finding, chunks, llm_response, confidence_score, confidence_label, verification_status, ctx))
+        try:
+            chunks = retrieve_context(finding, ctx, retriever, settings.retrieval_top_k)
+            prompt = build_prompt(finding, ctx, chunks)
+            llm_response = explain(prompt, generate)
+            confidence_score, confidence_label = score_confidence(finding, chunks)
+            if settings.enable_verification:
+                verification_status = verify_finding(finding, llm_response)
+            else:
+                verification_status = VerificationStatus.UNVERIFIED
+            results.append(
+                _assemble(finding, chunks, llm_response, confidence_score, confidence_label, verification_status, ctx)
+            )
+        except Exception as exc:
+            logger.error("AI pipeline: enrichment failed on finding_id=%s: %s", finding.finding_id, exc)
+            raise
     return results

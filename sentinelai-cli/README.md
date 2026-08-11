@@ -2,11 +2,14 @@
 
 Viraj's piece of SentinelAI: the Typer-based CLI that drives a scan and
 renders the results. It depends only on the `FindingsProvider` interface
-(see `docs/CONTRACTS.md`), not on any specific data source — today that's
-`MockFindingsProvider`, backed by a bundled sample dataset, so the CLI,
-its output formats, and the shared contracts can all be built and
-demoed without waiting on Nithanth's scanner backend or Tanaya's AI
-pipeline.
+(see `docs/CONTRACTS.md`), not on any specific data source. By default
+`sentinelai scan` uses `LiveFindingsProvider` — Nithanth's real backend
+and scanner framework (Semgrep, Bandit, GitLeaks) — via `_get_provider()`
+in `main.py`. `MockFindingsProvider`, backed by a bundled sample dataset,
+remains available and is what the CLI's own test suite pins itself to,
+for deterministic, tool-free assertions. AI enrichment (Tanaya's layer)
+is opt-in on top of either provider — see "AI Enrichment Configuration"
+below.
 
 Two commands, two distinct jobs:
 
@@ -29,6 +32,118 @@ extra pulls in `pytest` for running the test suite.
 
 If you'd rather not install it as a package, `pip install -r requirements.txt`
 and run it as `python -m sentinelai.main scan .` instead.
+
+## AI Enrichment Configuration
+
+`sentinelai scan` runs Tanaya's AI layer (RAG retrieval, LLM reasoning,
+and verification over each finding) only when it's explicitly
+configured via environment variables. If it isn't, `scan` still works
+exactly as described in this README — `ai_findings` stays empty and the
+command still succeeds. AI is opt-in, never required.
+
+### Required to enable AI enrichment
+
+Both of these must be set together — if either is missing, AI
+enrichment is skipped entirely (see "When AI is not configured" below):
+
+| Variable | Meaning |
+|---|---|
+| `SENTINELAI_AI_LLM_MODEL` | Name of the Ollama model used to generate explanations, e.g. `llama3`. No safe default exists — depends on which model you've pulled locally. |
+| `SENTINELAI_AI_EMBEDDING_MODEL` | Name of the Ollama embedding model used for knowledge-base retrieval, e.g. `nomic-embed-text`. |
+
+### Setting up Ollama
+
+Setting the two variables above is not enough by itself — Ollama is
+separate software SentinelAI does not install or bundle. Before
+`SENTINELAI_AI_LLM_MODEL`/`SENTINELAI_AI_EMBEDDING_MODEL` can do
+anything, Ollama itself must be installed, running, and already have
+both models pulled locally:
+
+```bash
+# 1. Install Ollama (see https://ollama.com for platform-specific instructions)
+
+# 2. Start the Ollama server (leave this running, or run it as a service)
+ollama serve
+
+# 3. Pull the models you intend to point SENTINELAI_AI_LLM_MODEL /
+#    SENTINELAI_AI_EMBEDDING_MODEL at - these two names match the
+#    examples in sentinelai/ai/config.py
+ollama pull llama3
+ollama pull nomic-embed-text
+```
+
+`SENTINELAI_AI_LLM_MODEL`/`SENTINELAI_AI_EMBEDDING_MODEL` aren't
+restricted to these two names — any model you've pulled works equally
+well, as long as the value you set matches exactly what `ollama pull`
+was given. If Ollama isn't running, or the named model hasn't been
+pulled, `scan` fails with a connection or "model not found" error from
+the Ollama server rather than silently skipping AI enrichment - AI is
+only silently skipped when the environment variables themselves are
+unset (see "When AI is not configured" below).
+
+### Optional AI configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SENTINELAI_AI_LLM_HOST` | `http://localhost:11434` | Base URL of the Ollama server (shared by generation and embeddings). |
+| `SENTINELAI_AI_RETRIEVAL_TOP_K` | `5` | Number of knowledge-base chunks retrieved per finding. |
+| `SENTINELAI_AI_CONFIDENCE_HIGH_THRESHOLD` | `0.75` | Minimum confidence score (inclusive) mapped to `high`. |
+| `SENTINELAI_AI_CONFIDENCE_MEDIUM_THRESHOLD` | `0.4` | Minimum confidence score (inclusive) mapped to `medium`; below this is `low`. |
+| `SENTINELAI_AI_ENABLE_VERIFICATION` | `true` | Whether the verification step runs before a finding is emitted. |
+| `SENTINELAI_AI_LOG_LEVEL` | `INFO` | Logging level for the AI layer. |
+
+`SENTINELAI_AI_LLM_PROVIDER` and `SENTINELAI_AI_EMBEDDING_PROVIDER` also
+exist (see `sentinelai/ai/config.py`) but are currently unused — they're
+reserved so a future second LLM/embedding implementation has somewhere
+to be selected from, without changing `AISettings`' shape. Setting them
+today has no effect.
+
+### Which providers are supported today
+
+**Ollama is the only LLM/embedding provider implemented right now**
+(`sentinelai/ai/llm_ollama.py`, `sentinelai/ai/embeddings_ollama.py`).
+OpenAI, Gemini, Claude, Groq, and LM Studio are not wired up yet — the
+`llm_provider`/`embedding_provider` settings above exist to let a future
+provider be selected without a breaking change, but no second
+implementation exists in the code today. Don't set them expecting a
+cloud provider to activate; nothing currently reads them.
+
+Ollama runs locally and requires **no API key** — `SENTINELAI_AI_LLM_HOST`
+names where to reach it, not a credential. More generally, **SentinelAI
+never bundles or ships an API key or credential for any provider.**
+Whenever a cloud-hosted provider is supported (OpenAI, Gemini, Claude,
+Groq, or any future LM-Studio-style local server that does need a key),
+its credential would always be supplied by the person deploying
+SentinelAI via an environment variable of their own — never checked
+into this repository or embedded in the tool itself.
+
+### When AI is not configured
+
+If `SENTINELAI_AI_LLM_MODEL` or `SENTINELAI_AI_EMBEDDING_MODEL` (or
+both) is unset, `scan` behaves exactly as if the AI layer didn't exist:
+scanner findings are still produced and rendered normally, `ai_findings`
+stays an empty list, and the command still exits `0` on success. Missing
+AI configuration is never treated as a failure — this is the default,
+most common way to run SentinelAI today.
+
+### End-to-end example
+
+With Ollama already running and both models pulled (see above):
+
+```bash
+export SENTINELAI_AI_LLM_MODEL=llama3
+export SENTINELAI_AI_EMBEDDING_MODEL=nomic-embed-text
+
+sentinelai scan . --format json --output scan-result.json
+```
+
+With both variables correctly set and Ollama reachable, `scan` runs
+Semgrep/Bandit/GitLeaks as usual and then runs every scanner finding
+through retrieval, LLM reasoning, and verification before writing the
+report — `scan-result.json`'s `findings.ai_enriched` list is populated
+(one entry per scanner finding, correlated by `finding_id`) instead of
+staying empty, and `statistics.ai_enrichment_status` no longer reads
+`"unavailable"`.
 
 ## Usage
 
@@ -95,7 +210,7 @@ sentinelai-cli/
 │   ├── __init__.py
 │   ├── core/                # exit codes, error hierarchy, centralized severity ranking
 │   ├── contracts/           # shared Pydantic schema — see docs/CONTRACTS.md
-│   ├── providers/           # FindingsProvider interface + MockFindingsProvider
+│   ├── providers/           # FindingsProvider interface + LiveFindingsProvider (default) + MockFindingsProvider
 │   ├── statistics/          # calculate_statistics(ScanResult) -> ScanStatistics
 │   ├── reporting/           # JSON, Markdown, HTML, SARIF report generators + loader.py + Jinja2 templates/
 │   ├── presentation/        # Rich terminal rendering — used only for --format terminal
@@ -109,11 +224,12 @@ sentinelai-cli/
 ```
 
 **Integration seam:** the CLI only ever talks to the abstract
-`FindingsProvider` interface (`_get_provider()` in `main.py`). When
-Nithanth's backend is ready, a new provider implementation (e.g. calling
-his `/scan` endpoint) replaces `MockFindingsProvider()` there — nothing
-in `presentation/`, `reporting/`, or the rest of `main.py` needs to
-change. Full details, including how Tanaya's
+`FindingsProvider` interface (`_get_provider()` in `main.py`), currently
+returning `LiveFindingsProvider()` — the same seam that was previously
+`MockFindingsProvider()` before Nithanth's backend was ready. Swapping
+the concrete implementation there again in the future (e.g. a remote/API
+provider) would require no change in `presentation/`, `reporting/`, or
+the rest of `main.py`. Full details, including how Tanaya's
 AI-enriched findings join onto scanner findings, are in
 `docs/CONTRACTS.md`.
 
@@ -359,16 +475,21 @@ even when something goes wrong.
 1. checks out the repository and sets up Python 3.12
 2. installs SentinelAI from `pyproject.toml` (`pip install -e ".[dev]"`) — no dependency list duplicated into the workflow
 3. runs the full test suite (`pytest -v`) — a test failure stops the workflow before SentinelAI ever runs, and is never reported as a security finding
-4. runs SentinelAI **once**: `sentinelai scan . --format json --output scan-result.json --fail-on high`
-5. generates SARIF and HTML from that *saved* result (`sentinelai report scan-result.json --format sarif|html ...`) — the repository is never re-scanned
-6. uploads `scan-result.json`, `sentinelai-results.sarif`, and `sentinelai-report.html` as a single `sentinelai-security-reports` artifact, unconditionally (`if: always()`), so reports are preserved even when the gate or the tool itself fails
-7. evaluates the captured scan exit code and fails the job with a clearly labeled message distinguishing a security-policy failure (exit `1`) from a tool failure (exit `2`/`3`/`4`)
+4. installs Semgrep, Bandit, and GitLeaks — the three scanners `LiveFindingsProvider`'s default registry needs on `PATH` to run at all
+5. runs SentinelAI **once**, against this repository, through the real `LiveFindingsProvider`: `sentinelai scan . --format json --output scan-result.json --fail-on high`
+6. generates SARIF and HTML from that *saved* result (`sentinelai report scan-result.json --format sarif|html ...`) — the repository is never re-scanned
+7. uploads `scan-result.json`, `sentinelai-results.sarif`, and `sentinelai-report.html` as a single `sentinelai-security-reports` artifact, unconditionally (`if: always()`), so reports are preserved even when the gate or the tool itself fails
+8. evaluates the captured scan exit code and fails the job with a clearly labeled message distinguishing a security-policy failure (exit `1`) from a tool failure (exit `2`/`3`/`4`)
 
-The workflow uses only `MockFindingsProvider` — the bundled sample
-dataset — so it requires **no API keys or secrets** (no OpenAI,
-Anthropic, Gemini, Hugging Face, or Qdrant credentials) and produces the
-same deterministic result on every run. `permissions: contents: read` is
-the only permission granted.
+`sentinelai scan` always uses `LiveFindingsProvider` — there is no flag
+or environment variable to select `MockFindingsProvider` instead, so
+this step performs a real scan of the checked-out repository and its
+output can vary between runs as the repository itself changes. The
+workflow still requires **no API keys or secrets**: AI enrichment only
+runs when `SENTINELAI_AI_LLM_MODEL` and `SENTINELAI_AI_EMBEDDING_MODEL`
+are both set, and this workflow never sets them, so no LLM, embedding,
+or database credentials of any kind (Ollama or otherwise) are needed
+here. `permissions: contents: read` is the only permission granted.
 
 **What this does *not* do yet:** upload the SARIF to GitHub's native
 Code Scanning UI (`github/codeql-action/upload-sarif`) — reports are
@@ -388,7 +509,5 @@ sentinelai report scan-result.json --format html --output sentinelai-report.html
 
 ## What's next
 
-- Swap `MockFindingsProvider` for a real provider once Nithanth's
-  scanner backend is ready.
 - Native GitHub Code Scanning SARIF upload.
 - Git hooks / pre-commit integration, Docker, and release automation.

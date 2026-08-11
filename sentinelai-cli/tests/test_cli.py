@@ -6,9 +6,22 @@ Run the real Typer app via CliRunner against the real MockFindingsProvider
 CLI -> FindingsProvider -> ScanResult -> display/formatters flow. Provider
 usage is verified by monkeypatching MockFindingsProvider.get_scan_result
 to record calls while still delegating to the original implementation.
+
+_get_provider() itself now defaults to LiveFindingsProvider in production
+(sentinelai/providers/live_provider.py) - real scanner execution has its
+own dedicated test suite (tests/test_live_provider.py) and no business
+running through 74 CLI-behavior assertions that were never testing "which
+provider," only rendering/filtering/formatting given a ScanResult. The
+autouse fixture below pins _get_provider() back to MockFindingsProvider
+for every test in this file, so all of them keep exercising deterministic,
+tool-free mock data exactly as before. The one test that verifies the
+production default actually changed lives in test_provider_selection.py
+instead - not here, since an autouse fixture scoped to this module would
+otherwise patch it before it runs, defeating its own point.
 """
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from sentinelai.contracts import ScanMode
@@ -17,6 +30,14 @@ from sentinelai.main import app
 from sentinelai.providers import MockFindingsProvider
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _use_mock_provider(monkeypatch):
+    """Every test in this file exercises the CLI against MockFindingsProvider, not the live default."""
+    import sentinelai.main as main_module
+
+    monkeypatch.setattr(main_module, "_get_provider", lambda: MockFindingsProvider())
 
 
 def _spy_get_scan_result(monkeypatch):

@@ -56,6 +56,7 @@ get_settings() is a lazy singleton, mirroring
 presentation/console.py's get_console(): built once from the
 environment on first call, cached for the life of the process.
 """
+import logging
 import os
 from enum import Enum
 from typing import Optional
@@ -170,8 +171,17 @@ def get_settings() -> AISettings:
 
     Process-wide singleton: the environment is read on the first call only, so changing
     os.environ later in the same process is intentionally not picked up by later calls.
+
+    Applies log_level to the shared "sentinelai" logger (the same logger
+    main.py/live_provider.py/pipeline.py already use) as part of this
+    one-time construction, not on every call - setLevel() only changes
+    which records the logger *lets through*; with no handler configured
+    anywhere (the default), Python's own logging.lastResort fallback still
+    applies its own fixed WARNING floor regardless of this call, so this
+    does not by itself introduce any new default output.
     """
     global _settings
     if _settings is None:
         _settings = _settings_from_env()
+        logging.getLogger("sentinelai").setLevel(_settings.log_level.value)
     return _settings

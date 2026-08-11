@@ -126,7 +126,7 @@ Pydantic models fall back to defaults for anything not explicitly set.
 
 ## Provider interface
 
-**Location:** `sentinelai/providers/base.py`, `sentinelai/providers/mock_provider.py`
+**Location:** `sentinelai/providers/base.py`, `sentinelai/providers/live_provider.py`, `sentinelai/providers/mock_provider.py`
 
 ```python
 class FindingsProvider(ABC):
@@ -136,15 +136,25 @@ class FindingsProvider(ABC):
 ```
 
 Viraj's CLI depends on this abstract interface, **not** on Nithanth's
-backend directly. Today `MockFindingsProvider` is the only
-implementation — it reads a bundled JSON fixture and returns a
-`ScanResult` with `ai_findings` empty (the mock has no AI layer).
+backend directly — the contract is what makes the following true rather
+than aspirational. Two implementations exist today:
 
-Once Nithanth's backend is ready, a second implementation (e.g. an
-`ApiFindingsProvider` calling his `/scan` endpoint, or a call into his
-orchestration function directly) is a drop-in replacement: it returns the
-same `ScanResult` shape, and nothing in the CLI, reporting, or statistics
-code needs to change.
+- `LiveFindingsProvider` — the default (`main.py`'s `_get_provider()`
+  returns this unconditionally). Loads the target repository through
+  Nithanth's backend and runs Semgrep, Bandit, and GitLeaks against it
+  via `ScannerOrchestrator`, returning a real `ScanResult` with
+  `ai_findings` empty (AI enrichment, when configured, is applied
+  separately by the CLI — see the AI-layer sections above).
+- `MockFindingsProvider` — reads a bundled JSON fixture instead of
+  running real scanners. Still present and still useful: it's what the
+  CLI's own test suite pins itself to for deterministic, tool-free
+  assertions, independent of whether Semgrep/Bandit/GitLeaks are
+  installed in the environment running the tests.
+
+Both return the identical `ScanResult` shape, and nothing in the CLI,
+reporting, or statistics code differs based on which one is active. A
+future third implementation (e.g. a remote/API-backed provider) would be
+a drop-in replacement the same way `LiveFindingsProvider` was.
 
 ---
 

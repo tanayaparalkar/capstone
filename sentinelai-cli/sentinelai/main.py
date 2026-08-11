@@ -3,11 +3,14 @@ SentinelAI CLI entry point.
 
 Two distinct workflows live here:
 
-- `scan`: retrieves a ScanResult from a FindingsProvider (today,
-  MockFindingsProvider; once Nithanth's backend is ready, swapping to a
-  real provider means changing _get_provider() and nothing else). If
+- `scan`: retrieves a ScanResult from a FindingsProvider (LiveFindingsProvider
+  by default - the real backend + scanner framework, per _get_provider();
+  MockFindingsProvider remains available and is what the CLI test suite
+  pins itself to, for deterministic, tool-free assertions). If
   Tanaya's AI layer is configured (SENTINELAI_AI_LLM_MODEL and
-  SENTINELAI_AI_EMBEDDING_MODEL both set), runs
+  SENTINELAI_AI_EMBEDDING_MODEL both set), rebuilds repository context via
+  the backend (sentinelai.backend), adapts it with
+  sentinelai.ai.repository_context.from_backend_context(), and runs
   sentinelai.ai.enrich_findings() over the scanner findings to populate
   ai_findings; otherwise ai_findings stays empty, exactly as it always
   has. Either way, renders the result live (--format terminal) or
@@ -35,6 +38,7 @@ full convention. `--debug` (an app-level flag, available before any
 subcommand) additionally prints the real traceback to stderr on an
 unexpected failure; without it, only a one-line message is shown.
 """
+import logging
 import sys
 import time
 from datetime import datetime, timezone
@@ -49,7 +53,10 @@ from .ai import enrich_findings
 from .ai.config import get_settings
 from .ai.confidence_scorer import score_confidence
 from .ai.factory import create_default_retriever, create_llm_generate_fn
+from .ai.repository_context import from_backend_context
 from .ai.verifier import verify_finding
+from .backend.context_builder import build_repository_context
+from .backend.loader import load_repository
 from .contracts import ScanMode, ScanResult, Severity
 from .core import ExitCode, exceeds_fail_on_threshold, filter_by_severity
 from .presentation import (
@@ -62,7 +69,7 @@ from .presentation import (
     render_scan_header,
     render_summary,
 )
-from .providers import FindingsProvider, MockFindingsProvider
+from .providers import FindingsProvider, LiveFindingsProvider
 from .reporting import ReportLoadError, load_scan_result, to_html, to_json, to_markdown, to_sarif
 from .statistics import ScanStatistics, calculate_statistics
 
@@ -71,6 +78,14 @@ app = typer.Typer(
     help="SentinelAI - AI-Powered Vulnerability Detection for DevSecOps",
     add_completion=False,
 )
+
+# Operational logging, separate from the user-facing console output above:
+# silent by default (no handler is configured here - that's left to
+# whoever deploys/embeds SentinelAI, matching stdlib logging convention),
+# so this adds no visible output and changes no existing behavior. It
+# exists purely so an operator who *does* configure a handler gets a
+# trail of scan starts/completions/failures for unattended runs.
+logger = logging.getLogger("sentinelai")
 
 VALID_FORMATS = {"terminal", "json", "markdown", "html", "sarif"}
 REPORT_FORMATS = {"json", "markdown", "html", "sarif"}  # no "terminal" - report renders persisted formats only
@@ -88,8 +103,8 @@ def main(
 
 
 def _get_provider() -> FindingsProvider:
-    """The single seam that will later be swapped for a real provider."""
-    return MockFindingsProvider()
+    """The single seam swapped from MockFindingsProvider to the real backend."""
+    return LiveFindingsProvider()
 
 
 def _fail(message: str, code: ExitCode) -> None:
@@ -129,6 +144,7 @@ def _write_or_print(console: Console, content: str, output: Optional[str], debug
         try:
             Path(output).write_text(content, encoding="utf-8")
         except OSError as exc:
+            logger.error("failed to write report to '%s': %s", output, exc)
             _fail_from_exception(f"failed to write report to '{output}'", exc, ExitCode.INVALID_INPUT, debug)
         console.print(f"[bold green]Report written to[/bold green] {output}")
     else:
@@ -184,14 +200,16 @@ def scan(
     """
     Scan a repository for vulnerabilities.
 
-    Findings currently come from MockFindingsProvider regardless of the
-    path given - a real provider backed by Nithanth's scanner pipeline
-    swaps in behind the same FindingsProvider interface once it's ready.
+    Findings come from LiveFindingsProvider, which loads the given path
+    through the backend and runs Semgrep/Bandit/GitLeaks against it via
+    ScannerOrchestrator - see sentinelai/providers/live_provider.py.
     If both SENTINELAI_AI_LLM_MODEL and SENTINELAI_AI_EMBEDDING_MODEL are
     configured, every scanner finding is then run through Tanaya's frozen
     AI layer (sentinelai.ai.enrich_findings(), constructed via
     sentinelai.ai.factory's create_default_retriever()/
-    create_llm_generate_fn()) to populate ai_findings before filtering,
+    create_llm_generate_fn(), given repository context rebuilt from the
+    backend and adapted via sentinelai.ai.repository_context.
+    from_backend_context()) to populate ai_findings before filtering,
     statistics, and rendering. If either is unconfigured, AI enrichment
     is skipped entirely and ai_findings stays empty - the same behavior
     `scan` has always had - rather than failing the command.
@@ -254,6 +272,7 @@ def scan(
         )
 
     provider = _get_provider()
+    logger.info("scan started: path=%s mode=%s provider=%s", repo_path, mode.value, provider.__class__.__name__)
     started = time.monotonic()
     try:
         if format == "terminal":
@@ -264,17 +283,41 @@ def scan(
     except Exception as exc:
         # The provider failed - a tool/integration problem, not a
         # security finding and not necessarily a SentinelAI bug.
+        logger.error("scan failed: provider=%s path=%s error=%s", provider.__class__.__name__, repo_path, exc)
         _fail_from_exception("scan failed", exc, ExitCode.PROVIDER_ERROR, debug)
     elapsed = time.monotonic() - started
     result = result.model_copy(update={"metadata": result.metadata.model_copy(update={"duration_seconds": elapsed})})
+    logger.info(
+        "scan retrieved %d scanner findings in %.2fs", len(result.scanner_findings), elapsed
+    )
 
     settings = get_settings()
     ai_configured = settings.llm_model is not None and settings.embedding_model is not None
     if ai_configured:
+        # Rebuilds repository context via the backend rather than threading it through
+        # FindingsProvider: LiveFindingsProvider already builds one internally, but
+        # ScanResult (the frozen FindingsProvider contract) has no field to carry it
+        # out, and adding one would be exactly the new abstraction this integration is
+        # meant to avoid. The cost is a second backend pass (git metadata, language
+        # detection, dependency/snippet extraction) when AI is configured - accepted
+        # rather than changing the provider contract for it. Any failure here (e.g. an
+        # invalid path MockFindingsProvider never validates) propagates raw, same as
+        # an enrich_findings() failure - both are "AI enrichment failed," per the
+        # existing, deliberate exception to this function's normal error handling.
+        logger.info("AI enrichment started: %d findings", len(result.scanner_findings))
+        backend_context = build_repository_context(load_repository(str(repo_path)))
         ai_findings = enrich_findings(
-            result.scanner_findings, create_default_retriever(), create_llm_generate_fn(), score_confidence, verify_finding
+            result.scanner_findings,
+            create_default_retriever(),
+            create_llm_generate_fn(),
+            score_confidence,
+            verify_finding,
+            repository_context=from_backend_context(backend_context),
         )
         result = result.model_copy(update={"ai_findings": ai_findings})
+        logger.info("AI enrichment completed: %d findings enriched", len(ai_findings))
+    else:
+        logger.info("AI enrichment skipped: not configured (SENTINELAI_AI_LLM_MODEL/SENTINELAI_AI_EMBEDDING_MODEL not set)")
 
     if min_severity is not None:
         result = filter_by_severity(result, min_severity)
@@ -313,6 +356,7 @@ def scan(
     try:
         content = _render_structured_content(format, result, stats)
     except Exception as exc:
+        logger.error("report generation failed: format=%s error=%s", format, exc)
         _fail_from_exception("report generation failed", exc, ExitCode.INTERNAL_ERROR, debug)
 
     _write_or_print(console, content, output, debug)
@@ -365,11 +409,13 @@ def report(
     try:
         result, stats = load_scan_result(Path(input_path))
     except ReportLoadError as exc:
+        logger.error("report failed: path=%s error=%s", input_path, exc)
         _fail(str(exc), ExitCode.INVALID_INPUT)
 
     try:
         content = _render_structured_content(report_format, result, stats)
     except Exception as exc:
+        logger.error("report generation failed: format=%s error=%s", report_format, exc)
         _fail_from_exception("report generation failed", exc, ExitCode.INTERNAL_ERROR, debug)
 
     _write_or_print(console, content, output, debug)
