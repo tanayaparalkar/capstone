@@ -54,11 +54,38 @@ duration/count metadata Ollama includes, for the same reason
 ai/llm_ollama.py ignores its own response's metadata fields - no
 consumer for any of them here.
 
-No exception handling: urllib.error.URLError/HTTPError,
-json.JSONDecodeError, and KeyError (a response missing "embeddings")
-all propagate as themselves, matching ai/llm_ollama.py's and every
-other file's established propagation policy. No SDK-level retry to
-defer to, so no retries here either.
+Exception handling, unlike ai/llm_ollama.py's deliberate lack of it:
+every transport and protocol failure here is translated into
+core.errors.AIEnrichmentError. The exception to the propagation policy
+is deliberate and specific to this file, because of one failure mode
+that is both extremely likely and impossible to diagnose from the raw
+error.
+
+Ollama's /api/embed only accepts a dedicated embedding model. Pointing
+SENTINELAI_AI_EMBEDDING_MODEL at a text-generation model - the obvious
+thing to do when you have already pulled llama3.1:8b for
+SENTINELAI_AI_LLM_MODEL and assume one model does both jobs - makes
+Ollama answer HTTP 501, and urllib renders that as "HTTP Error 501: Not
+Implemented". That message names no model, explains nothing, and
+suggests no fix; recovering from it unaided requires knowing Ollama's
+model taxonomy, which is not a reasonable thing to expect of someone
+running a security scanner. _http_message() below replaces it with the
+offending model name, the reason, and the two commands that fix it.
+
+The other branches (unreachable server, non-JSON body, missing
+"embeddings" key) are translated for consistency of type, so a caller
+depends on one exception rather than on urllib/json internals.
+
+Retries are handled by ai/ollama_http.py's read_with_retry(), which
+retries connection-level failures and transient 5xx statuses once, after
+a fixed 2-second backoff. HTTP 501 is explicitly excluded from that
+retry set: it is deterministic here - the model will not acquire
+embedding support on a second attempt - and it is the most common
+misconfiguration this file exists to explain, so retrying it would delay
+that explanation by the backoff for no benefit. A connection failure is
+retried once, since a server that was momentarily unreachable may answer
+the second attempt; if it does not, the same actionable message is
+raised as before.
 
 Imports only stdlib json/urllib.request, plus EmbeddingFn from
 ai/retrieval's public surface (`from .retrieval import EmbeddingFn`) -
@@ -73,11 +100,24 @@ reading get_settings() itself). No cycle: ai/retrieval/base.py never
 imports anything from ai/ root.
 """
 import json
+import urllib.error
 import urllib.request
 
+from sentinelai.core.errors import AIEnrichmentError
+
+from .ollama_http import read_with_retry
 from .retrieval import EmbeddingFn
 
 _REQUEST_TIMEOUT_SECONDS = 120
+
+_DEDICATED_MODEL_HINT = (
+    "Ollama's /api/embed only accepts a dedicated embedding model; a text-generation model "
+    "(llama3, llama3.1, mistral, ...) cannot produce embeddings. Fix it with:\n"
+    "    ollama pull nomic-embed-text\n"
+    "    export SENTINELAI_AI_EMBEDDING_MODEL=nomic-embed-text\n"
+    "Leave SENTINELAI_AI_LLM_MODEL pointing at your generation model - the two settings name "
+    "two different models and must not be set to the same value."
+)
 
 
 def make_ollama_embed_fn(host: str, model: str) -> EmbeddingFn:
@@ -97,9 +137,57 @@ def make_ollama_embed_fn(host: str, model: str) -> EmbeddingFn:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read().decode("utf-8"))
 
-        return body["embeddings"]
+        # read_with_retry re-raises the original urllib exception once its retries
+        # are exhausted, so the translation below is unchanged - it still sees, and
+        # still produces the same actionable message for, exactly the exceptions it
+        # handled before.
+        try:
+            raw_body = read_with_retry(request, _REQUEST_TIMEOUT_SECONDS, host)
+        except urllib.error.HTTPError as exc:
+            # Must be caught before URLError/OSError: HTTPError subclasses both.
+            raise AIEnrichmentError(_http_message(exc, host, model)) from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise AIEnrichmentError(
+                f"could not reach the Ollama server at {host} for embeddings ({exc}). "
+                "Is it running? Start it with `ollama serve`, or set SENTINELAI_AI_LLM_HOST if it "
+                "listens somewhere other than the default."
+            ) from exc
+
+        # Parsing sits outside the retry deliberately: a malformed body is
+        # deterministic, so a second attempt would fail identically.
+        try:
+            body = json.loads(raw_body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise AIEnrichmentError(
+                f"the Ollama server at {host} returned a non-JSON response to an embedding request ({exc})."
+            ) from exc
+
+        try:
+            return body["embeddings"]
+        except (KeyError, TypeError) as exc:
+            raise AIEnrichmentError(
+                f"the Ollama embedding response from {host} contained no 'embeddings' field "
+                f"(model '{model}'). {_DEDICATED_MODEL_HINT}"
+            ) from exc
 
     return embed
+
+
+def _http_message(exc: urllib.error.HTTPError, host: str, model: str) -> str:
+    """Turn an Ollama HTTP failure into a message naming the model, the cause, and the fix."""
+    if exc.code == 501:
+        return (
+            f"the embedding model '{model}' does not support embeddings "
+            f"(HTTP 501 Not Implemented from {host}/api/embed). {_DEDICATED_MODEL_HINT}"
+        )
+    if exc.code == 404:
+        return (
+            f"the Ollama server at {host} has no model named '{model}' (HTTP 404). "
+            f"Pull it with `ollama pull {model}`, or point SENTINELAI_AI_EMBEDDING_MODEL at a "
+            "dedicated embedding model such as nomic-embed-text."
+        )
+    return (
+        f"the embedding request to {host}/api/embed failed with HTTP {exc.code} ({exc.reason}) "
+        f"for model '{model}'. {_DEDICATED_MODEL_HINT}"
+    )

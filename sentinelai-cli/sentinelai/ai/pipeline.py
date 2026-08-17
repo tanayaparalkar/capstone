@@ -28,15 +28,44 @@ never InMemoryRetriever/EmbeddingFn/security_kb), and generate's output
 is already validated into LLMResponse by explain() before this file
 ever sees it.
 
-No exception handling in the sense of recovery: a per-finding try/except
-logs which finding_id was being processed and then re-raises the
-original exception unchanged (`raise` with no argument), so every
-stage's failure still propagates out of enrich_findings() exactly as
-before - the try/except exists only to make the failure point visible
-in the log, not to swallow, wrap, or otherwise handle it. Deciding what
-an acceptable partial failure looks like, or what a caller should be
-told, remains a policy decision "orchestrator only, no business logic"
-leaves to whoever calls this function.
+Failure handling is per-finding, not per-scan. A finding whose
+enrichment fails - a malformed LLM response, a schema violation, a
+transient error on one call - is logged at WARNING and skipped, and the
+remaining findings are still enriched. Previously the first failure
+re-raised and aborted the whole run, so one bad response discarded every
+successful enrichment alongside it.
+
+Skipped findings are omitted from the returned list rather than being
+given a placeholder AIEnrichedFinding, and that is a deliberate choice
+with three consequences, all of them the point:
+
+- statistics/calculator.py's _enrichment_status() reports PARTIAL
+  precisely when matched_ai_findings < total_findings, so omission is
+  what makes PARTIAL reachable. A placeholder carrying the same
+  finding_id would push matched back up to total and report AVAILABLE -
+  the opposite of the truth.
+- The failure count is already derivable from existing statistics
+  (total_findings - matched_ai_findings) whenever the status is PARTIAL,
+  so no new contract field is needed to express it.
+- Placeholders would also have to invent a confidence_score, which
+  _tally_ai_findings() averages into ConfidenceStatistics; a fabricated
+  0.0 would silently corrupt the reported confidence distribution for
+  every successful finding in the same scan.
+
+The scanner finding itself is never lost - it stays in
+ScanResult.scanner_findings and every renderer already has a path for a
+scanner finding with no matching enrichment ("AI enrichment not yet
+available for this finding"), which is the same, already-tested path
+scanner-only mode uses.
+
+Total failure remains an error: if every finding failed, the run raises
+AIEnrichmentError rather than returning an empty list. Silently
+completing with no enrichment would hide exactly the case the AI error
+handling in sentinelai/main.py was built to surface - an unreachable
+Ollama server or a misconfigured embedding model - reporting it as a
+clean PROVIDER_ERROR instead of an exit-0 scan that merely happens to
+contain no AI content. An empty input list is not a failure and returns
+[] without raising.
 
 repository_context defaults to RepositoryContext() when not supplied -
 the one construction this file does perform, safe because
@@ -51,6 +80,7 @@ import logging
 from typing import Callable, Optional
 
 from sentinelai.contracts import AIEnrichedFinding, ConfidenceLabel, ScannerFinding, VerificationStatus
+from sentinelai.core.errors import AIEnrichmentError
 
 from .agents.explainer import LLMFn, explain
 from .config import get_settings
@@ -123,7 +153,8 @@ def enrich_findings(
         "enabled" if settings.enable_verification else "disabled",
     )
 
-    results = []
+    results: list[AIEnrichedFinding] = []
+    failures: list[tuple[str, Exception]] = []
     for finding in scanner_findings:
         try:
             chunks = retrieve_context(finding, ctx, retriever, settings.retrieval_top_k)
@@ -138,6 +169,26 @@ def enrich_findings(
                 _assemble(finding, chunks, llm_response, confidence_score, confidence_label, verification_status, ctx)
             )
         except Exception as exc:
-            logger.error("AI pipeline: enrichment failed on finding_id=%s: %s", finding.finding_id, exc)
-            raise
+            # WARNING, not ERROR: the run continues and the outcome is reported.
+            # With no logging handler configured (this project's default), Python's
+            # logging.lastResort prints WARNING and above to stderr, so a skipped
+            # finding is visible to an operator rather than silently absent.
+            logger.warning("AI pipeline: enrichment failed on finding_id=%s: %s", finding.finding_id, exc)
+            failures.append((finding.finding_id, exc))
+
+    if failures and not results:
+        first_finding_id, first_exc = failures[0]
+        logger.error("AI pipeline: all %d findings failed enrichment", len(failures))
+        raise AIEnrichmentError(
+            f"all {len(failures)} finding(s) failed AI enrichment; "
+            f"first failure on '{first_finding_id}': {first_exc}"
+        ) from first_exc
+
+    if failures:
+        logger.warning(
+            "AI pipeline: enriched %d of %d findings (%d failed)",
+            len(results),
+            len(scanner_findings),
+            len(failures),
+        )
     return results

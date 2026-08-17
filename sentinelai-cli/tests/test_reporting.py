@@ -204,7 +204,12 @@ def test_cwe_preserved():
 
 
 def test_raw_evidence_preserved():
-    evidence = "AWS_ACCESS_KEY_ID = \"AKIAXXXXXXXXXXXXXXXX\""
+    # Placeholder deliberately shorter than a real AWS access key ID (AKIA + 16
+    # chars): the full-length form matches Semgrep's detected-aws-access-key-id-value
+    # rule, so SentinelAI's own self-scan flagged this repo's test data as a
+    # high-severity secret. This assertion only needs *some* evidence string to
+    # round-trip, so it does not depend on the value looking key-shaped.
+    evidence = "AWS_ACCESS_KEY_ID = \"AKIAEXAMPLEKEY00\""
     data = _report_json(_scan_result(scanner_findings=[_scanner_finding(raw_evidence=evidence)]))
     assert data["findings"]["scanner"][0]["raw_evidence"] == evidence
 

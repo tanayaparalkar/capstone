@@ -33,6 +33,28 @@ extra pulls in `pytest` for running the test suite.
 If you'd rather not install it as a package, `pip install -r requirements.txt`
 and run it as `python -m sentinelai.main scan .` instead.
 
+## Two ways to run SentinelAI
+
+SentinelAI has one scan pipeline and two modes. They are suited to different
+jobs, and the difference is mostly latency:
+
+| | **Scanner-only** (default) | **AI-enriched** (opt-in) |
+|---|---|---|
+| Setup | none | local Ollama + two models |
+| Typical runtime | ~4 s on a small repository | ~145 s on the same repository |
+| Cost model | fixed scanner startup | one local model request **per finding** |
+| Output | findings, severities, all report formats, `--fail-on` gating | the same, plus a per-finding explanation, impact, and remediation |
+| Best for | **CI gating** — fast, deterministic, no secrets | **local triage** — reading and understanding findings |
+
+Both modes run Semgrep, Bandit, and GitLeaks and produce every report format.
+Scanner-only is not a degraded mode: it is what this project's own CI runs on
+every push.
+
+Because AI-enriched mode is sequential and issues one request per finding, its
+runtime scales with finding count, which is why it is documented as a local
+developer-triage workflow rather than a CI gate. Measured figures for both modes
+are in `../PAPER_RESULTS.md`.
+
 ## AI Enrichment Configuration
 
 `sentinelai scan` runs Tanaya's AI layer (RAG retrieval, LLM reasoning,
@@ -43,43 +65,69 @@ command still succeeds. AI is opt-in, never required.
 
 ### Required to enable AI enrichment
 
-Both of these must be set together — if either is missing, AI
-enrichment is skipped entirely (see "When AI is not configured" below):
+AI enrichment uses **two different Ollama models**, because Ollama serves
+generation and embeddings from different model families. Both must be set
+together — if either is missing, AI enrichment is skipped entirely and the
+scan still succeeds (see "When AI is not configured" below):
 
-| Variable | Meaning |
-|---|---|
-| `SENTINELAI_AI_LLM_MODEL` | Name of the Ollama model used to generate explanations, e.g. `llama3`. No safe default exists — depends on which model you've pulled locally. |
-| `SENTINELAI_AI_EMBEDDING_MODEL` | Name of the Ollama embedding model used for knowledge-base retrieval, e.g. `nomic-embed-text`. |
+| Variable | Purpose | Ollama endpoint | Example |
+|---|---|---|---|
+| `SENTINELAI_AI_LLM_MODEL` | Generates the explanation, exploit path, impact, and remediation for each finding | `/api/generate` | `llama3.1:8b` |
+| `SENTINELAI_AI_EMBEDDING_MODEL` | Embeds the security knowledge base so findings can be matched to it | `/api/embed` | `nomic-embed-text` |
+
+> **⚠️ These must be two different models.** A text-generation model
+> (`llama3`, `llama3.1:8b`, `mistral`, …) **cannot** produce embeddings —
+> Ollama rejects the request with `HTTP 501: Not Implemented`. Setting
+> `SENTINELAI_AI_EMBEDDING_MODEL` to the same value as
+> `SENTINELAI_AI_LLM_MODEL` is the most common way to hit this. See
+> [Troubleshooting](#troubleshooting-ai-enrichment) below.
+
+### Quick start
+
+```bash
+# 1. Install Ollama (see https://ollama.com), then start the server
+ollama serve
+
+# 2. Pull BOTH models - one for generation, one for embeddings
+ollama pull llama3.1:8b        # text generation
+ollama pull nomic-embed-text   # embeddings (dedicated embedding model)
+
+# 3. Point SentinelAI at them - two different models
+export SENTINELAI_AI_LLM_MODEL=llama3.1:8b
+export SENTINELAI_AI_EMBEDDING_MODEL=nomic-embed-text
+
+# 4. Scan with AI enrichment
+sentinelai scan .
+```
+
+To go back to scanner-only mode, unset either variable:
+
+```bash
+unset SENTINELAI_AI_LLM_MODEL SENTINELAI_AI_EMBEDDING_MODEL
+```
 
 ### Setting up Ollama
 
 Setting the two variables above is not enough by itself — Ollama is
 separate software SentinelAI does not install or bundle. Before
 `SENTINELAI_AI_LLM_MODEL`/`SENTINELAI_AI_EMBEDDING_MODEL` can do
-anything, Ollama itself must be installed, running, and already have
-both models pulled locally:
+anything, Ollama must be installed (see https://ollama.com), running
+(`ollama serve`), and already have **both** models pulled locally — see
+[Quick start](#quick-start) for the exact commands.
 
-```bash
-# 1. Install Ollama (see https://ollama.com for platform-specific instructions)
+Neither variable is restricted to the example names: any model you've
+pulled works, as long as the value matches exactly what `ollama pull`
+was given, **and as long as the embedding model is genuinely an
+embedding model.** SentinelAI cannot check that from the name alone —
+nothing in a model's name reliably indicates whether it supports
+embeddings — so the check happens when Ollama is actually called, and
+surfaces as the `HTTP 501` error described in
+[Troubleshooting](#troubleshooting-ai-enrichment).
 
-# 2. Start the Ollama server (leave this running, or run it as a service)
-ollama serve
-
-# 3. Pull the models you intend to point SENTINELAI_AI_LLM_MODEL /
-#    SENTINELAI_AI_EMBEDDING_MODEL at - these two names match the
-#    examples in sentinelai/ai/config.py
-ollama pull llama3
-ollama pull nomic-embed-text
-```
-
-`SENTINELAI_AI_LLM_MODEL`/`SENTINELAI_AI_EMBEDDING_MODEL` aren't
-restricted to these two names — any model you've pulled works equally
-well, as long as the value you set matches exactly what `ollama pull`
-was given. If Ollama isn't running, or the named model hasn't been
-pulled, `scan` fails with a connection or "model not found" error from
-the Ollama server rather than silently skipping AI enrichment - AI is
-only silently skipped when the environment variables themselves are
-unset (see "When AI is not configured" below).
+If Ollama isn't running, or a named model hasn't been pulled, `scan`
+reports a clear error and exits `3` rather than silently skipping AI
+enrichment. AI is only silently skipped when the environment variables
+themselves are unset (see "When AI is not configured" below).
 
 ### Optional AI configuration
 
@@ -117,7 +165,7 @@ its credential would always be supplied by the person deploying
 SentinelAI via an environment variable of their own — never checked
 into this repository or embedded in the tool itself.
 
-### When AI is not configured
+### When AI is not configured (scanner-only mode — the default)
 
 If `SENTINELAI_AI_LLM_MODEL` or `SENTINELAI_AI_EMBEDDING_MODEL` (or
 both) is unset, `scan` behaves exactly as if the AI layer didn't exist:
@@ -126,13 +174,84 @@ stays an empty list, and the command still exits `0` on success. Missing
 AI configuration is never treated as a failure — this is the default,
 most common way to run SentinelAI today.
 
+**Scanner-only mode is a fully supported first-class mode, not a
+degraded one.** Semgrep, Bandit, and GitLeaks all run, every report
+format is produced, and `--fail-on` gating works exactly the same. It is
+also what CI runs (see `.github/workflows/ci.yml`), so no CI job needs
+Ollama, a model, or any API key.
+
+### Troubleshooting AI enrichment
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `AI enrichment failed: the embedding model 'llama3.1:8b' does not support embeddings (HTTP 501 …)` | `SENTINELAI_AI_EMBEDDING_MODEL` points at a text-generation model | `ollama pull nomic-embed-text` then `export SENTINELAI_AI_EMBEDDING_MODEL=nomic-embed-text` |
+| `AI enrichment failed: … has no model named 'x' (HTTP 404)` | The model isn't pulled | `ollama pull <model>` |
+| `AI enrichment failed: could not reach the Ollama server at http://localhost:11434 …` | Ollama isn't running, or listens elsewhere | `ollama serve`, or set `SENTINELAI_AI_LLM_HOST` |
+| `findings.ai_enriched` is empty and no error is shown | AI isn't configured — one of the two variables is unset | Set both (see [Quick start](#quick-start)) |
+
+A failure that prevents AI enrichment entirely — an unreachable server, an
+unusable embedding model, or every finding failing — exits with code `3`
+(`PROVIDER_ERROR`) and prints a single actionable line to stderr. The scan
+is never silently degraded into a success. Add `--debug` for the full
+traceback. Failures affecting only *some* findings behave differently; see
+[Partial vs. total AI failure](#partial-vs-total-ai-failure) below.
+
+Confirming which mode you're in:
+
+```bash
+# scanner-only: "unavailable"; AI enrichment: "available"; some failed: "partial"
+sentinelai scan . --format json | python -c 'import json,sys; print(json.load(sys.stdin)["statistics"]["ai_enrichment_status"])'
+```
+
+### Partial vs. total AI failure
+
+AI enrichment makes one model request per finding, so a failure can affect one
+finding or all of them. SentinelAI treats those two cases differently on
+purpose:
+
+| Situation | `ai_enrichment_status` | Exit code | What you get |
+|---|---|---|---|
+| Every finding enriched | `available` | 0 | Full AI output for all findings |
+| **Some** findings failed | `partial` | 0 | AI output for the findings that succeeded; the rest keep their scanner results and render as "AI enrichment not yet available for this finding" |
+| **Every** finding failed | — | **3** | One actionable error; no report written |
+| AI not configured | `unavailable` | 0 | Scanner-only mode (the default) |
+
+A finding that fails enrichment is **never dropped** — its scanner result is
+still reported in full. Only the AI commentary is missing, and each skipped
+finding is logged as a warning naming it and the reason. The number that failed
+is `total_findings - matched_ai_findings` in the statistics block whenever the
+status is `partial`.
+
+This is why a single malformed model response no longer discards a whole scan:
+with a small local model, one finding occasionally producing unparseable output
+is a normal event, not a reason to throw away sixteen good explanations.
+
+### Retry behaviour
+
+Requests to Ollama — both generation and embeddings — are retried **once** after
+a fixed 2-second delay, and only for failures a retry could plausibly fix:
+connection refused, DNS and socket timeouts, and transient HTTP 500/502/503/504.
+
+Deliberately **not** retried, because they are deterministic and a second attempt
+would fail identically while costing the delay:
+
+- malformed or non-JSON model output, and responses failing schema validation;
+- configuration errors (for example, an empty model name);
+- all 4xx statuses, such as a model that has not been pulled (404);
+- **HTTP 501** — Ollama's response when the configured embedding model cannot
+  produce embeddings. This is the most common misconfiguration here, so it is
+  reported immediately rather than after a pointless delay.
+
+Each attempt keeps the full 120-second request timeout. A healthy request makes
+exactly one HTTP call, so retries add nothing to the normal path.
+
 ### End-to-end example
 
 With Ollama already running and both models pulled (see above):
 
 ```bash
-export SENTINELAI_AI_LLM_MODEL=llama3
-export SENTINELAI_AI_EMBEDDING_MODEL=nomic-embed-text
+export SENTINELAI_AI_LLM_MODEL=llama3.1:8b        # generation
+export SENTINELAI_AI_EMBEDDING_MODEL=nomic-embed-text   # embeddings
 
 sentinelai scan . --format json --output scan-result.json
 ```

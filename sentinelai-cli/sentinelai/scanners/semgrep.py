@@ -56,6 +56,10 @@ _SEVERITY_MAP = {
     "INFO": Severity.LOW,
 }
 
+# Values Semgrep puts in `extra.fingerprint` that are not real fingerprints.
+# Compared lowercased/stripped - see _finding_id below.
+_PLACEHOLDER_FINGERPRINTS = {"requires login"}
+
 
 class SemgrepScanner(Scanner):
     """Runs `semgrep --json` against a repository and converts its results into ScannerFinding objects."""
@@ -94,7 +98,7 @@ def _convert_result(result: Dict[str, Any], index: int) -> ScannerFinding:
     line_start, line_end = _extract_line_range(result)
 
     return ScannerFinding(
-        finding_id=extra.get("fingerprint") or f"semgrep-{index}",
+        finding_id=_finding_id(extra, index),
         scanner="semgrep",
         category=metadata.get("category") or result.get("check_id", "unknown"),
         severity=_map_severity(extra.get("severity")),
@@ -106,6 +110,36 @@ def _convert_result(result: Dict[str, Any], index: int) -> ScannerFinding:
         raw_evidence=extra.get("lines"),
         cwe=_extract_cwe(metadata),
     )
+
+
+def _finding_id(extra: Dict[str, Any], index: int) -> str:
+    """Semgrep's own fingerprint when it is a real one, else a positional fallback.
+
+    Semgrep only computes real content-based fingerprints for logged-in (registry-
+    authenticated) runs. Anonymous runs - which is how this wrapper invokes it, with
+    no --config and no login - put the literal string "requires login" in the
+    fingerprint field of *every* result instead. That value is truthy, so the previous
+    `extra.get("fingerprint") or f"semgrep-{index}"` accepted it, and every Semgrep
+    finding in a scan came out carrying the same finding_id.
+
+    That is a correlation-key collision, not a cosmetic problem: finding_id is what
+    joins ScannerFinding to AIEnrichedFinding in statistics/calculator.py and in all
+    four report renderers, each of which builds a `{finding.finding_id: ...}` dict.
+    Duplicate ids silently collapse those entries, so N Semgrep findings would render
+    against one another's AI enrichment.
+
+    Rejecting the placeholder and falling back to the positional id restores
+    uniqueness. The positional fallback is deliberately kept over deriving an id from
+    check_id: check_id is the *rule* identifier and is shared by every finding that
+    rule produces (verified directly - two eval() calls in two files yield two results
+    with one identical check_id), so it cannot serve as a per-finding key either.
+    """
+    fingerprint = extra.get("fingerprint")
+    if isinstance(fingerprint, str):
+        candidate = fingerprint.strip()
+        if candidate and candidate.lower() not in _PLACEHOLDER_FINGERPRINTS:
+            return candidate
+    return f"semgrep-{index}"
 
 
 def _extract_line_range(result: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:

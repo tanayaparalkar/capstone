@@ -214,17 +214,25 @@ def scan(
     is skipped entirely and ai_findings stays empty - the same behavior
     `scan` has always had - rather than failing the command.
 
+    The two variables must name two different Ollama models: a
+    text-generation model for SENTINELAI_AI_LLM_MODEL (e.g. llama3.1:8b)
+    and a dedicated embedding model for SENTINELAI_AI_EMBEDDING_MODEL
+    (e.g. nomic-embed-text). A generation model cannot produce
+    embeddings; setting both to the same value makes Ollama reject the
+    embedding request with HTTP 501, reported here as PROVIDER_ERROR.
+
     Exit codes: 0 on success (including when findings exist but
     --fail-on wasn't crossed), 1 if --fail-on's threshold was crossed,
-    2 for invalid input (bad path/flags), 3 if the provider itself
-    failed, 4 for an unexpected internal error. See
+    2 for invalid input (bad path/flags), 3 if the provider or the AI
+    layer failed, 4 for an unexpected internal error. See
     sentinelai/core/exit_codes.py for the full convention. AI enrichment
-    failures are a deliberate exception to this convention, but only
-    once AI is actually configured: they are not caught, wrapped, or
-    mapped to a named ExitCode - an unhandled exception from
-    enrich_findings() propagates as a raw Python traceback and Python's
-    default exit status, not one of the codes above. Missing
-    configuration is not treated as a failure at all - see above.
+    failures - an unreachable Ollama server, or an embedding model that
+    cannot produce embeddings - are reported as PROVIDER_ERROR (3) with
+    a one-line message naming the problem and its fix, the same category
+    as a scanner/backend failure, since in both cases something
+    SentinelAI depends on failed rather than SentinelAI itself. Use
+    --debug for the full traceback. Missing AI configuration is not
+    treated as a failure at all - see above.
     """
     debug: bool = (ctx.obj or {}).get("debug", False)
     console = get_console()
@@ -300,20 +308,30 @@ def scan(
         # out, and adding one would be exactly the new abstraction this integration is
         # meant to avoid. The cost is a second backend pass (git metadata, language
         # detection, dependency/snippet extraction) when AI is configured - accepted
-        # rather than changing the provider contract for it. Any failure here (e.g. an
-        # invalid path MockFindingsProvider never validates) propagates raw, same as
-        # an enrich_findings() failure - both are "AI enrichment failed," per the
-        # existing, deliberate exception to this function's normal error handling.
+        # rather than changing the provider contract for it.
         logger.info("AI enrichment started: %d findings", len(result.scanner_findings))
-        backend_context = build_repository_context(load_repository(str(repo_path)))
-        ai_findings = enrich_findings(
-            result.scanner_findings,
-            create_default_retriever(),
-            create_llm_generate_fn(),
-            score_confidence,
-            verify_finding,
-            repository_context=from_backend_context(backend_context),
-        )
+        try:
+            backend_context = build_repository_context(load_repository(str(repo_path)))
+            ai_findings = enrich_findings(
+                result.scanner_findings,
+                create_default_retriever(),
+                create_llm_generate_fn(),
+                score_confidence,
+                verify_finding,
+                repository_context=from_backend_context(backend_context),
+            )
+        except Exception as exc:
+            # Same category as a provider failure: something SentinelAI depends on -
+            # the Ollama server, the configured embedding model - failed, not
+            # SentinelAI itself. Without this, the single most likely AI
+            # misconfiguration (a text-generation model set as the embedding model,
+            # which Ollama answers with HTTP 501) reached the user as a raw traceback.
+            # Caught broadly rather than on AIEnrichmentError alone so that failures
+            # from outside the AI layer in this same block - an unreadable repository
+            # path, a missing knowledge base - are reported the same clean way.
+            # --debug still prints the full traceback.
+            logger.error("AI enrichment failed: path=%s error=%s", repo_path, exc)
+            _fail_from_exception("AI enrichment failed", exc, ExitCode.PROVIDER_ERROR, debug)
         result = result.model_copy(update={"ai_findings": ai_findings})
         logger.info("AI enrichment completed: %d findings enriched", len(ai_findings))
     else:

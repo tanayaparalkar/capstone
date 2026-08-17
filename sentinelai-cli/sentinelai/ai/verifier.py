@@ -80,6 +80,11 @@ _GENERIC_CATEGORY_TERMS = {
     "traversal",
 }
 
+# Applied by _normalize_category only. Same terms as _GENERIC_CATEGORY_TERMS plus
+# "security" - see _normalize_category's docstring for why the two sets are kept
+# separate rather than merged.
+_NORMALIZATION_STOP_WORDS = _GENERIC_CATEGORY_TERMS | {"security"}
+
 
 def _combined_llm_text(llm_response: LLMResponse) -> str:
     parts = [llm_response.explanation, llm_response.remediation]
@@ -91,7 +96,32 @@ def _combined_llm_text(llm_response: LLMResponse) -> str:
 
 
 def _normalize_category(category: str) -> str:
-    return category.lower().replace("-", " ").strip()
+    """Lowercase, split on both separators, and drop generic security nouns.
+
+    Underscores are handled alongside hyphens because Bandit's categories are
+    underscore-joined test names (`subprocess_popen_with_shell_equals_true`,
+    `hardcoded_password_string`). Replacing only hyphens left those as a single
+    40-character token that no generated explanation could ever contain, so every
+    Bandit finding failed both the phrase tier and the token fallback and was
+    REJECTED regardless of how on-topic the explanation actually was.
+
+    `or text` keeps the pre-filter string when filtering would empty it, so a
+    category that is *entirely* generic (Semgrep's bare "security", the value its
+    metadata carries for most rules) still yields something to match on rather than
+    collapsing to "" and being reported as INSUFFICIENT_EVIDENCE by verify_finding.
+    Note this deliberately does not make such a category verify more often - it
+    still has to appear in the generated text - it only preserves the existing
+    outcome for it instead of changing it.
+
+    _GENERIC_CATEGORY_TERMS is intentionally left as-is and still applied separately
+    by _distinguishing_terms: this function's stop list additionally contains
+    "security", which must not leak into the token fallback, where removing it would
+    silently turn every already-REJECTED bare-"security" finding into a different
+    verdict rather than leaving that behaviour untouched.
+    """
+    text = category.lower().replace("-", " ").replace("_", " ").strip()
+    tokens = [token for token in text.split() if token not in _NORMALIZATION_STOP_WORDS]
+    return " ".join(tokens) or text
 
 
 def _distinguishing_terms(normalized_category: str) -> list[str]:

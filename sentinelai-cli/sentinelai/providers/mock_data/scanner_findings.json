@@ -9,7 +9,7 @@
     "line_end": 14,
     "rule_id": "gitleaks.aws-access-key",
     "message": "Hardcoded AWS access key and secret detected in source file.",
-    "raw_evidence": "AWS_ACCESS_KEY_ID = \"AKIAXXXXXXXXXXXXXXXX\"",
+    "raw_evidence": "AWS_ACCESS_KEY_ID = \"AKIAEXAMPLEKEY00\"",
     "cwe": "CWE-798"
   },
   {

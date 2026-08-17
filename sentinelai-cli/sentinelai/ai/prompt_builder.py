@@ -34,6 +34,44 @@ confidence_scorer.py, not by the LLM.
 repository_context is a required RepositoryContext, not Optional, for
 the same reason ai/retrieval/context_retrieval.py's parameter is: the
 "no context" default lives with pipeline.py, not duplicated here.
+
+_OUTPUT_FORMAT_INSTRUCTIONS was missing entirely until this file was
+observed producing the actual bug it was meant to prevent:
+_TASK_INSTRUCTIONS above asked the model to "explain... describe...
+note... suggest," with no mention of JSON anywhere in the prompt, while
+ai/agents/explainer.py has always called json.loads() on the result and
+ai/llm_response.py's LLMResponse has always rejected any extra key.
+Nothing in the prompt ever told the model about either constraint.
+Verified directly against a real llama3.1:8b response before writing
+this: with no format instruction, the model produced a well-formed,
+useful, entirely prose explanation with Markdown bold headers - not
+malformed output, just the ordinarily reasonable answer to a prompt
+that never asked for JSON in the first place. Markdown code fences
+(handled defensively by ai/llm_ollama.py's _strip_markdown_fences) are
+a *secondary* symptom of the same root cause - a model given no output-
+format instruction may reasonably choose to fence code-shaped content
+- not a problem this section alone would have covered without the
+fence-stripping already in place.
+
+Placed as the *last* section build_prompt() appends, after the finding,
+repository context, and retrieved knowledge - not folded into
+_TASK_INSTRUCTIONS at the top. Format instructions are more reliably
+followed the closer they are to where generation actually begins;
+putting the six field names and the "JSON only" requirement immediately
+before the model starts producing output, rather than several hundred
+tokens earlier, is a real difference for a small local model, not a
+stylistic preference.
+
+Field list, names, and required/optional split are read directly from
+LLMResponse's own field declarations (ai/llm_response.py) - title,
+explanation, and remediation are required; exploit_path, impact, and
+patch_suggestion are Optional[str] = None. Instructing the model to
+include all six keys with explicit `null` for anything not applicable,
+rather than allowing keys to be silently omitted, is the more reliable
+instruction for a small model even though Pydantic itself would accept
+either: an omitted-vs-present-with-null distinction is exactly the kind
+of small inconsistency a smaller model is more likely to get wrong than
+a larger one.
 """
 from typing import Optional
 
@@ -47,6 +85,17 @@ _TASK_INSTRUCTIONS = (
     "finding's evidence below and the related security knowledge (if any), explain the "
     "vulnerability, describe how it could be exploited if applicable, note its potential "
     "impact, and suggest a remediation."
+)
+
+_OUTPUT_FORMAT_INSTRUCTIONS = (
+    "Respond with ONLY a single JSON object and no other text - no explanation before or "
+    "after it, and no Markdown code fences (no ```). The JSON object must have exactly these "
+    'six keys: "title", "explanation", "exploit_path", "impact", "remediation", '
+    '"patch_suggestion".\n'
+    '"title", "explanation", and "remediation" are required non-empty strings. '
+    '"exploit_path", "impact", and "patch_suggestion" are optional: include the key and set '
+    "it to JSON null if it does not apply to this finding, rather than omitting the key or "
+    'writing a placeholder like "N/A".'
 )
 
 
@@ -106,5 +155,7 @@ def build_prompt(
     retrieved_chunks_section = _format_retrieved_chunks_section(retrieved_chunks)
     if retrieved_chunks_section is not None:
         sections.append(retrieved_chunks_section)
+
+    sections.append(_OUTPUT_FORMAT_INSTRUCTIONS)
 
     return "\n\n".join(sections)

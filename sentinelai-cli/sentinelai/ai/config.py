@@ -20,6 +20,21 @@ built later, its settings arrive with that file, reviewed together -
 matching how every other field here was added only once a real
 consumer existed.
 
+AI enrichment is built around two separate Ollama models, because
+Ollama itself serves generation and embeddings from different model
+families:
+
+    llm_model        text generation, e.g. 'llama3.1:8b'   (/api/generate)
+    embedding_model  embeddings,      e.g. 'nomic-embed-text' (/api/embed)
+
+Both must be set for AI enrichment to run - sentinelai/main.py skips the
+entire stage unless both are present, and a scan with either missing
+still succeeds as a scanner-only run. They must also name *different*
+models: pointing embedding_model at a generation model is the most
+common misconfiguration here and makes Ollama return HTTP 501, which
+ai/embeddings_ollama.py translates into an error naming the model and
+the fix.
+
 Deliberately NOT here:
 
 - The knowledge-base path. security_kb/loader.py owns its own default
@@ -29,6 +44,11 @@ Deliberately NOT here:
   to configure - llm_host/llm_model below name *where* and *what*, never
   a secret. embedding_provider remains reserved/unused pending that
   decision, unchanged.
+- Validation that embedding_model is genuinely an embedding model.
+  Nothing in a model *name* reliably says whether it supports
+  embeddings, so a name-based check here would be a guess that both
+  rejects valid models and misses invalid ones. Ollama itself is the
+  only authority, so the check happens where the call is made.
 
 llm_model is Optional[str] = None, not required, even though
 ai/llm_ollama.py cannot actually run without one: making it required
@@ -131,10 +151,12 @@ class AISettings(BaseModel):
     embedding_model: Optional[str] = Field(
         default=None,
         description=(
-            "Name of the Ollama embedding model, e.g. 'nomic-embed-text' - typically a different model "
-            "from llm_model, so the two cannot share one field. Same unset-by-default rationale as "
-            "llm_model: validated by ai/embeddings_ollama.py's factory when actually called, not required "
-            "for every unrelated AISettings() construction."
+            "Name of the Ollama embedding model, e.g. 'nomic-embed-text'. Must be a DEDICATED embedding "
+            "model and must not be the same value as llm_model: a text-generation model cannot produce "
+            "embeddings, and Ollama rejects such a request with HTTP 501 (see ai/embeddings_ollama.py, "
+            "which turns that into an actionable error). Same unset-by-default rationale as llm_model - "
+            "leaving it unset disables AI enrichment entirely rather than failing a scan, so unrelated "
+            "AISettings() constructions never need it."
         ),
     )
 

@@ -29,3 +29,13 @@ sentinelai = ["providers/mock_data/*.json", "reporting/templates/*.j2", "securit
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# "not benchmark" here, not in ci.yml's `pytest -v` invocation: this is what
+# makes the exclusion the *default* for every plain `pytest`/`pytest -q` run,
+# local or CI, without CI needing its own opt-out flag. `-m benchmark` on the
+# command line overrides this addopts value (pytest resolves -m to whichever
+# occurrence is last - the explicit one), which is what makes `pytest -m
+# benchmark -v` select those tests instead of just adding to this filter.
+addopts = "-m 'not benchmark'"
+markers = [
+    "benchmark: invokes real Semgrep/Bandit/GitLeaks against sentinelai-manual-test/ and asserts a wall-time budget. Excluded from the default test run (see addopts above); run explicitly with `pytest -m benchmark -v`. Not run by CI.",
+]
