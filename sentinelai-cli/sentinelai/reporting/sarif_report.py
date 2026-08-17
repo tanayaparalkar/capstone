@@ -195,4 +195,14 @@ def _ai_properties(ai: AIEnrichedFinding) -> dict:
         props["relatedFindings"] = ai.related_findings
     if ai.references:
         props["references"] = ai.references
+    # Critic review signals. Kept as distinct keys from verificationStatus above,
+    # never merged with it: one is a deterministic category check, the other an
+    # LLM grounding review. Absent keys mean no critic ran, matching how every
+    # other optional AI field is emitted here.
+    if ai.grounding_verdict is not None:
+        props["groundingVerdict"] = ai.grounding_verdict.value
+    if ai.supported_claims:
+        props["supportedClaims"] = ai.supported_claims
+    if ai.unsupported_claims:
+        props["unsupportedClaims"] = ai.unsupported_claims
     return props

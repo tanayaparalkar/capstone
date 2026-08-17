@@ -73,6 +73,11 @@
   .badge.pending, .badge.unverified, .badge.insufficient_evidence { background: #9ca3af; }
   .badge.verified { background: #16a34a; }
   .badge.rejected { background: #dc2626; }
+  /* Critic grounding verdicts. `insufficient_evidence` is shared with the
+     verification badge rule above; without these two the white badge text would
+     render on no background at all. */
+  .badge.supported { background: #16a34a; }
+  .badge.partially_supported { background: #d97706; }
 
   .finding-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; padding: 20px; margin-bottom: 16px; scroll-margin-top: 16px; }
   .finding-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
@@ -299,6 +304,26 @@
           <span class="badge {{ item.ai.verification_status.value }}">{{ item.ai.verification_status.value|upper }}</span>
           {{ item.ai.verification_status.value|replace("_", " ") }}
         </p>
+
+        {# Critic review signals. Rendered as their own section, never merged with
+           Verification above: that badge is a deterministic category-consistency
+           check, this one is an LLM grounding review, and the two may disagree.
+           Both blocks are skipped entirely when no critic ran, so reports written
+           before the multi-agent pipeline render byte-identically. #}
+        {% if item.ai.grounding_verdict %}
+        <div class="section-label">Grounding (critic review)</div>
+        <p>
+          <span class="badge {{ item.ai.grounding_verdict.value }}">{{ item.ai.grounding_verdict.value|upper }}</span>
+          {{ item.ai.grounding_verdict.value|replace("_", " ") }}
+        </p>
+        {% endif %}
+
+        {% if item.ai.unsupported_claims %}
+        <div class="section-label">Unsupported or Uncertain Claims</div>
+        <ul class="reference-list">
+          {% for claim in item.ai.unsupported_claims %}<li>{{ claim }}</li>{% endfor %}
+        </ul>
+        {% endif %}
 
         {% if item.related %}
         <div class="section-label">Related Findings</div>

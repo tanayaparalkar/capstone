@@ -26,6 +26,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from agent_fakes import make_agent_generate
+
 from sentinelai.ai.config import AISettings
 from sentinelai.ai.retrieval import RetrievedChunk, Retriever
 from sentinelai.main import app
@@ -46,26 +48,21 @@ class _EmptyRetriever(Retriever):
         return []
 
 
-def _fake_generate(prompt: str) -> str:
-    return json.dumps(
-        {
-            "title": "Fake finding title",
-            "explanation": "Fake explanation.",
-            "exploit_path": None,
-            "impact": None,
-            "remediation": "Fake remediation.",
-            "patch_suggestion": None,
-        }
-    )
-
-
 def _configure_ai(monkeypatch):
+    """Configure AI with a schema-aware fake serving all three agent stages.
+
+    The fake dispatches on the response_schema the pipeline passes, so it answers
+    the Evidence, Exploit/Remediation, and Critic stages in turn - a single-shape
+    fake would fail on the second stage.
+    """
+    generate = make_agent_generate()
     monkeypatch.setattr(
         "sentinelai.main.get_settings",
         lambda: AISettings(llm_model="fake-model", embedding_model="fake-embed-model"),
     )
     monkeypatch.setattr("sentinelai.main.create_default_retriever", lambda: _EmptyRetriever())
-    monkeypatch.setattr("sentinelai.main.create_llm_generate_fn", lambda: _fake_generate)
+    monkeypatch.setattr("sentinelai.main.create_llm_generate_fn", lambda: generate)
+    return generate
 
 
 def _write(path: Path, content: str = "x") -> None:

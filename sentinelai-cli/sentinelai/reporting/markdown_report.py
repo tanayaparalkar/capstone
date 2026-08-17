@@ -152,6 +152,15 @@ def _finding_section(f: ScannerFinding, ai: Optional[AIEnrichedFinding]) -> str:
             f"- **Confidence:** {ai.confidence_label.value.upper()} ({ai.confidence_score:.2f})",
             f"- **Verification:** {ai.verification_status.value}",
         ]
+        # Critic review signals, rendered separately from Verification above:
+        # verification_status is the deterministic category check, grounding_verdict
+        # is the critic agent's judgement. Omitted entirely when no critic ran, so
+        # reports predating the multi-agent pipeline render exactly as before.
+        if ai.grounding_verdict is not None:
+            lines.append(f"- **Grounding (critic):** {ai.grounding_verdict.value}")
+        if ai.unsupported_claims:
+            lines += ["", "**Unsupported or Uncertain Claims**", ""]
+            lines += [f"- {claim}" for claim in ai.unsupported_claims]
         if ai.related_findings:
             lines.append(f"- **Related Findings:** {', '.join(ai.related_findings)}")
         if ai.references:

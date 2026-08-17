@@ -1,5 +1,5 @@
 """Shared Pydantic contracts for the SentinelAI pipeline."""
-from .ai_finding import AIEnrichedFinding, ConfidenceLabel, VerificationStatus
+from .ai_finding import AIEnrichedFinding, ConfidenceLabel, GroundingVerdict, VerificationStatus
 from .common import Severity
 from .scan_result import RepositoryInfo, ScanMetadata, ScanMode, ScanResult
 from .scanner_finding import ScannerFinding
@@ -7,6 +7,7 @@ from .scanner_finding import ScannerFinding
 __all__ = [
     "AIEnrichedFinding",
     "ConfidenceLabel",
+    "GroundingVerdict",
     "VerificationStatus",
     "Severity",
     "RepositoryInfo",

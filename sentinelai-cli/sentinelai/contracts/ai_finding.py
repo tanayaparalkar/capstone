@@ -32,6 +32,27 @@ class VerificationStatus(str, Enum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
+class GroundingVerdict(str, Enum):
+    """How well a critic agent judged the generated narrative to be supported by evidence.
+
+    Deliberately a separate axis from VerificationStatus, never a replacement for
+    it. VerificationStatus is produced by ai/verifier.py, a deterministic,
+    network-free check that the generated text is topically consistent with the
+    scanner's category. GroundingVerdict is produced by an LLM critic reviewing
+    the other agents' claims against the supplied evidence. They answer different
+    questions by different means, they can legitimately disagree, and neither is
+    derived from the other - see ai/agents/synthesizer.py, which is forbidden from
+    converting one into the other.
+
+    This is a review signal, not calibrated verification and not a proof of
+    factual correctness.
+    """
+
+    SUPPORTED = "supported"
+    PARTIALLY_SUPPORTED = "partially_supported"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+
 class AIEnrichedFinding(BaseModel):
     finding_id: str = Field(..., description="finding_id of the primary ScannerFinding this enrichment is about")
     title: str = Field(..., description="Short human-readable title for the finding")
@@ -53,3 +74,23 @@ class AIEnrichedFinding(BaseModel):
         default_factory=list, description="finding_ids of other findings involved in the same exploit chain"
     )
     references: list[str] = Field(default_factory=list, description="External references, e.g. CWE/OWASP links")
+
+    # Critic-agent review signals. All three are optional with defaults so that a
+    # report written before the multi-agent pipeline existed still loads: a saved
+    # JSON report with none of these keys validates and simply carries None/[],
+    # which every renderer treats as "no critic ran" rather than as an error.
+    grounding_verdict: Optional[GroundingVerdict] = Field(
+        None,
+        description=(
+            "Critic agent's judgement of how well this finding's narrative is supported by the "
+            "supplied evidence. None when no critic ran. Never derived from, and never converted "
+            "into, verification_status - the two are independent signals."
+        ),
+    )
+    supported_claims: list[str] = Field(
+        default_factory=list, description="Claims the critic judged to be supported by the supplied evidence"
+    )
+    unsupported_claims: list[str] = Field(
+        default_factory=list,
+        description="Claims the critic judged unsupported or uncertain given the supplied evidence",
+    )

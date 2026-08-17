@@ -71,14 +71,21 @@ def render_finding_detail(console: Console, finding: ScannerFinding, ai: Optiona
         if ai.impact:
             sections += ["", Text("Impact", style="bold"), Text(ai.impact)]
         sections += ["", Text("Remediation", style="bold"), Text(ai.remediation)]
-        sections += [
-            "",
-            Text(
-                f"Confidence: {ai.confidence_label.value.upper()} ({ai.confidence_score:.2f})   "
-                f"Verification: {ai.verification_status.value}",
-                style="dim",
-            ),
-        ]
+        status_line = (
+            f"Confidence: {ai.confidence_label.value.upper()} ({ai.confidence_score:.2f})   "
+            f"Verification: {ai.verification_status.value}"
+        )
+        # Grounding is appended to the same status line rather than replacing
+        # Verification: they are independent signals and a reader needs both.
+        # Omitted when no critic ran, so scanner-only and pre-multi-agent reports
+        # show exactly what they showed before.
+        if ai.grounding_verdict is not None:
+            status_line += f"   Grounding: {ai.grounding_verdict.value}"
+        sections += ["", Text(status_line, style="dim")]
+
+        if ai.unsupported_claims:
+            sections += ["", Text("Unsupported or Uncertain Claims", style="bold")]
+            sections += [Text(f"  - {claim}") for claim in ai.unsupported_claims]
     else:
         sections += ["", Text("AI enrichment not yet available for this finding.", style="dim italic")]
 

@@ -17,9 +17,9 @@ computed over successful enrichments alone.
 All stages are injected callables, so no Ollama server, no knowledge
 base, and no network are involved.
 """
-import json
-
 import pytest
+
+from agent_fakes import make_agent_generate
 
 from sentinelai.ai.config import AISettings
 from sentinelai.ai.confidence_scorer import score_confidence
@@ -37,16 +37,6 @@ from sentinelai.contracts import (
 from sentinelai.core.errors import AIEnrichmentError
 from sentinelai.statistics import calculate_statistics
 from sentinelai.statistics.models import AIEnrichmentStatus
-
-_VALID = {
-    "title": "A finding",
-    "explanation": "sql injection explanation.",
-    "exploit_path": None,
-    "impact": None,
-    "remediation": "A sql injection remediation.",
-    "patch_suggestion": None,
-}
-
 
 def _finding(finding_id: str) -> ScannerFinding:
     return ScannerFinding(
@@ -69,19 +59,8 @@ class _FixedRetriever(Retriever):
 
 
 def _generate_failing_on(*failing_ids: str):
-    """An LLMFn that raises for the named findings and returns valid JSON otherwise.
-
-    The prompt embeds `Finding: <id>`, so the finding under enrichment is
-    identifiable without threading extra state through the pipeline.
-    """
-
-    def generate(prompt: str) -> str:
-        for finding_id in failing_ids:
-            if f"Finding: {finding_id}\n" in prompt or prompt.rstrip().endswith(f"Finding: {finding_id}"):
-                raise ConnectionRefusedError(f"simulated failure for {finding_id}")
-        return json.dumps(_VALID)
-
-    return generate
+    """Schema-aware LLMFn that fails for the named findings and answers all three stages otherwise."""
+    return make_agent_generate(fail_on_finding_ids=failing_ids)
 
 
 def _settings(monkeypatch, **overrides):

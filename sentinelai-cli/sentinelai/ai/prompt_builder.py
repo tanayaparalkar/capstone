@@ -141,6 +141,35 @@ def _format_retrieved_chunks_section(retrieved_chunks: list[RetrievedChunk]) -> 
     return "\n".join(lines)
 
 
+def build_evidence_block(
+    finding: ScannerFinding,
+    repository_context: RepositoryContext,
+    retrieved_chunks: list[RetrievedChunk],
+) -> str:
+    """The shared evidence every agent reasons over: the finding, repository context, and KB chunks.
+
+    Extracted so ai/agents/'s three prompts present *identical* evidence and
+    differ only in their role instruction and output schema. Duplicating this
+    formatting per agent would let the agents silently drift apart on what they
+    were shown, which would undermine the one property the critic stage depends
+    on - that every agent judged the same material.
+
+    Returns only the evidence sections; the role instruction and the output
+    contract are each agent's own concern.
+    """
+    sections = [_format_finding_section(finding)]
+
+    repository_context_section = _format_repository_context_section(repository_context)
+    if repository_context_section is not None:
+        sections.append(repository_context_section)
+
+    retrieved_chunks_section = _format_retrieved_chunks_section(retrieved_chunks)
+    if retrieved_chunks_section is not None:
+        sections.append(retrieved_chunks_section)
+
+    return "\n\n".join(sections)
+
+
 def build_prompt(
     finding: ScannerFinding,
     repository_context: RepositoryContext,

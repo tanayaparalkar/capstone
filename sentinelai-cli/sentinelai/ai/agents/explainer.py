@@ -57,19 +57,66 @@ consistently avoided elsewhere (confidence and verification were kept
 as separate files rather than combined into one scoring/ package).
 """
 import json
-from typing import Callable
+from typing import Optional, Protocol, Type, TypeVar
+
+from pydantic import BaseModel
 
 from ..llm_response import LLMResponse
 
-# generate(prompt) must either return a complete JSON string or raise an exception.
-# It must never return partial JSON, streamed fragments, or a provider-specific
-# response object (e.g. a GenerateContentResponse or {"text": "..."} wrapper) -
-# unwrapping that is whichever concrete provider constructs this callable's job,
-# not this file's. Violating this silently turns this file provider-aware.
-LLMFn = Callable[[str], str]
+
+class LLMFn(Protocol):
+    """Calling convention for a text-generating model.
+
+    A Protocol rather than a Callable alias because the contract grew a second,
+    optional parameter: `response_schema` lets a caller constrain decoding to a
+    Pydantic model's JSON Schema (ai/llm_ollama.py sends it in Ollama's `format`
+    field). Callers that do not need it keep calling `generate(prompt)`, and the
+    default of None reproduces the original single-argument behaviour exactly.
+
+    generate() must either return a complete response string or raise. It must
+    never return partial JSON, streamed fragments, or a provider-specific
+    response object (e.g. a GenerateContentResponse or {"text": ...} wrapper) -
+    unwrapping that is whichever concrete provider constructs this callable's
+    job, not this file's. Violating this silently turns this file
+    provider-aware.
+    """
+
+    def __call__(self, prompt: str, response_schema: Optional[Type[BaseModel]] = None) -> str:
+        ...
+
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+
+def run_agent(prompt: str, generate: LLMFn, response_schema: Type[_ModelT]) -> _ModelT:
+    """Make one model call and validate the response into `response_schema`.
+
+    The single seam every agent in ai/agents/ goes through, so that "call the
+    model, parse JSON, validate, fail loudly on anything else" exists once rather
+    than once per agent. The schema is passed to `generate` as well as being
+    parsed here: constrained decoding makes a conforming response likely, and
+    validation makes a non-conforming one impossible to mistake for success.
+
+    Parse and validation failures propagate as themselves (json.JSONDecodeError,
+    pydantic.ValidationError), matching the propagation policy already
+    established in this package. They are deterministic, so ai/ollama_http.py
+    deliberately does not retry them; ai/pipeline.py's per-finding handler is
+    what turns whichever exception surfaces into "this finding wasn't enriched."
+    """
+    raw_text = generate(prompt, response_schema=response_schema)
+    data = json.loads(raw_text)
+    return response_schema.model_validate(data)
 
 
 def explain(prompt: str, generate: LLMFn) -> LLMResponse:
+    """Single-call enrichment against the flat LLMResponse schema.
+
+    Superseded by the multi-agent pipeline (ai/pipeline.py), which calls
+    run_agent() three times per finding instead. Retained because
+    ai/verifier.py's deterministic check still consumes an LLMResponse, and
+    because this is the narrowest illustration of the unconstrained-generation
+    path that ai/ollama_http.py's retry tests exercise.
+    """
     raw_text = generate(prompt)
     data = json.loads(raw_text)
     return LLMResponse.model_validate(data)

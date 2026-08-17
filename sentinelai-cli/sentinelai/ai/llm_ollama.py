@@ -20,6 +20,21 @@ validated non-empty here and raise immediately if not - llm_model has
 no safe default at the config level (see ai/config.py), so this is
 where "you must actually configure this" surfaces.
 
+Structured output: generate() takes an optional `response_schema` - a
+Pydantic model class whose model_json_schema() is sent in Ollama's
+`format` field, constraining decoding to that schema. This is what makes
+the multi-agent pipeline's nested outputs (ai/agents/schemas.py)
+practical on a small local model: asking an 8B model to emit a correct
+nested object from prose instructions alone is unreliable, whereas
+constrained decoding makes the shape a property of the request rather
+than of the model's diligence. The schema instruction is still included
+in the prompt as well, because `format` constrains only the *shape* -
+the prompt is what conveys what each field is supposed to contain.
+
+When no schema is passed, no `format` key is sent and the request is
+byte-identical to the previous unconstrained one, so existing callers
+are unaffected.
+
 generate(prompt) -> str: POSTs to {host}/api/generate with
 stream: false (Ollama's default streaming mode returns newline-delimited
 JSON chunks, not one object - would silently break json.loads(), and
@@ -90,6 +105,9 @@ No cycle possible.
 import json
 import re
 import urllib.request
+from typing import Any, Dict, Optional, Type
+
+from pydantic import BaseModel
 
 from .llm_base import LLMProvider
 from .ollama_http import read_with_retry
@@ -117,15 +135,28 @@ class OllamaProvider(LLMProvider):
         self._host = host
         self._model = model
 
-    def generate(self, prompt: str) -> str:
-        payload = json.dumps(
-            {
-                "model": self._model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": _TEMPERATURE},
-            }
-        ).encode("utf-8")
+    def generate(self, prompt: str, response_schema: Optional[Type[BaseModel]] = None) -> str:
+        """Return the model's complete response text for `prompt`.
+
+        When `response_schema` is supplied, its JSON Schema is sent in Ollama's
+        `format` field, constraining decoding so the response conforms to that
+        schema. The schema instruction also stays in the prompt: `format`
+        constrains the shape, while the prompt is what tells the model what each
+        field is supposed to mean.
+
+        Omitting `response_schema` reproduces the previous request byte for byte -
+        no `format` key is sent at all - so unconstrained callers are unaffected.
+        """
+        request_body: Dict[str, Any] = {
+            "model": self._model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": _TEMPERATURE},
+        }
+        if response_schema is not None:
+            request_body["format"] = response_schema.model_json_schema()
+
+        payload = json.dumps(request_body).encode("utf-8")
 
         request = urllib.request.Request(
             f"{self._host}/api/generate",
