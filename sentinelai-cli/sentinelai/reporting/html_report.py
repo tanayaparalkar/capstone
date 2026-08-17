@@ -24,7 +24,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from ..contracts import ScanResult
-from ..core import format_location
+from ..core import build_ai_lookup, build_correlation_lookup, format_location
 from ..statistics import ScanStatistics
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -38,12 +38,14 @@ def to_html(result: ScanResult, statistics: ScanStatistics) -> str:
 
 def _build_context(result: ScanResult, stats: ScanStatistics) -> dict:
     scanner_findings = sorted(result.scanner_findings, key=lambda f: f.finding_id)
-    ai_by_id = {a.finding_id: a for a in result.ai_findings}
+    ai_by_id = build_ai_lookup(result)
+    corr_by_id = build_correlation_lookup(result)
     known_anchors = {f.finding_id: _anchor(f.finding_id) for f in scanner_findings}
 
     findings = []
     for f in scanner_findings:
         ai = ai_by_id.get(f.finding_id)
+        corr = corr_by_id.get(f.finding_id)
         findings.append(
             {
                 "finding": f,
@@ -51,6 +53,13 @@ def _build_context(result: ScanResult, stats: ScanStatistics) -> dict:
                 "anchor": known_anchors[f.finding_id],
                 "location": format_location(f),
                 "ai_confidence_percent": round(ai.confidence_score * 100) if ai else None,
+                "correlation": corr if (corr is not None and len(corr.source_finding_ids) > 1) else None,
+                "correlation_others": (
+                    [i for i in corr.source_finding_ids if i != f.finding_id]
+                    if corr is not None and len(corr.source_finding_ids) > 1
+                    else []
+                ),
+                "is_canonical": corr is not None and corr.canonical_finding_id == f.finding_id,
                 "related": [
                     {"id": rid, "anchor": known_anchors.get(rid)} for rid in (ai.related_findings if ai else [])
                 ],

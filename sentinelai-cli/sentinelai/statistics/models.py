@@ -62,6 +62,17 @@ class ScanStatistics(BaseModel):
     confidence: ConfidenceStatistics = Field(default_factory=ConfidenceStatistics)
     verification_counts: dict[str, int] = Field(default_factory=dict)
 
+    # Correlation. Reported alongside total_findings, never instead of it: a reader
+    # must be able to see both how many raw findings the scanners produced and how
+    # many distinct issues they correspond to. Both default to 0 so statistics
+    # recomputed from a pre-correlation saved report stay valid.
+    correlated_findings: int = Field(
+        0, description="Number of distinct issues after cross-scanner correlation."
+    )
+    multi_scanner_findings: int = Field(
+        0, description="Correlated issues corroborated by more than one scanner."
+    )
+
     # Repository / scan metadata - only what ScanResult actually provides
     repository_name: str
     scan_mode: str

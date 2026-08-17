@@ -319,6 +319,8 @@ def scan(
                 score_confidence,
                 verify_finding,
                 repository_context=from_backend_context(backend_context),
+                # Enrich once per correlated issue rather than once per raw hit.
+                correlated_findings=result.correlated_findings,
             )
         except Exception as exc:
             # Same category as a provider failure: something SentinelAI depends on -

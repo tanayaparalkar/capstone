@@ -43,3 +43,33 @@ def normalize_file_uri(file: Optional[str]) -> Optional[str]:
     if file is None:
         return None
     return file.replace("\\", "/")
+
+
+def build_ai_lookup(result) -> dict:
+    """Map every raw finding_id to its AI enrichment, resolving correlated groups.
+
+    AIEnrichedFinding.finding_id remains the *canonical raw* finding id, so the
+    direct join every renderer already performed keeps working untouched. This
+    adds the second hop: the non-canonical raw findings in a correlated group
+    resolve to the same enrichment via source_finding_ids.
+
+    No enrichment is duplicated to satisfy the older direct-id join - the same
+    object is simply reachable from every raw id in its group, so a report shows
+    one analysis for one issue rather than the same text repeated per scanner.
+    Pre-correlation results have empty source_finding_ids and fall through to the
+    direct mapping alone, unchanged.
+    """
+    lookup = {ai.finding_id: ai for ai in result.ai_findings}
+    for ai in result.ai_findings:
+        for source_id in ai.source_finding_ids:
+            lookup.setdefault(source_id, ai)
+    return lookup
+
+
+def build_correlation_lookup(result) -> dict:
+    """Map every raw finding_id to the CorrelatedFinding it belongs to, if any."""
+    return {
+        source_id: group
+        for group in result.correlated_findings
+        for source_id in group.source_finding_ids
+    }

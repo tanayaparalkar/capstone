@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from sentinelai.contracts import RepositoryInfo, ScanMetadata, ScanMode, ScanResult, ScannerFinding
+from sentinelai.correlation import correlate_findings
 
 from .base import FindingsProvider
 
@@ -41,4 +42,5 @@ class MockFindingsProvider(FindingsProvider):
             ),
             scanner_findings=scanner_findings,
             ai_findings=[],
+            correlated_findings=correlate_findings(scanner_findings),
         )

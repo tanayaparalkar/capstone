@@ -129,7 +129,8 @@
   <section id="executive-summary">
     <h2>Executive Summary</h2>
     <div class="cards">
-      <div class="card"><div class="value">{{ stats.total_findings }}</div><div class="label">Total Findings</div></div>
+      <div class="card"><div class="value">{{ stats.total_findings }}</div><div class="label">Raw Findings</div></div>
+      <div class="card"><div class="value">{{ stats.correlated_findings }}</div><div class="label">Correlated Issues</div></div>
       <div class="card critical"><div class="value">{{ stats.critical_findings }}</div><div class="label">Critical</div></div>
       <div class="card high"><div class="value">{{ stats.high_findings }}</div><div class="label">High</div></div>
       <div class="card medium"><div class="value">{{ stats.medium_findings }}</div><div class="label">Medium</div></div>
@@ -261,6 +262,20 @@
         <dt>Rule</dt><dd><code>{{ item.finding.rule_id }}</code></dd>
         <dt>Location</dt><dd>{{ item.location }}</dd>
         {% if item.finding.cwe %}<dt>CWE</dt><dd>{{ item.finding.cwe }}</dd>{% endif %}
+        {# Canonical/source relationship. Lives in the finding metadata, not the AI
+           section, because correlation is deterministic and runs in scanner-only
+           mode - a report with no AI must still show how findings were grouped. #}
+        {% if item.correlation %}
+        <dt>Correlated Issue</dt>
+        <dd>
+          <code>{{ item.correlation.correlation_id }}</code>
+          {% if item.is_canonical %}(canonical){% else %}(grouped under <code>{{ item.correlation.canonical_finding_id }}</code>){% endif %}
+        </dd>
+        <dt>Grouped With</dt>
+        <dd>{% for o in item.correlation_others %}<code>{{ o }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</dd>
+        <dt>Correlated Scanners</dt><dd>{{ item.correlation.scanners|join(", ") }}</dd>
+        <dt>Correlation Basis</dt><dd>{{ item.correlation.correlation_reason }}</dd>
+        {% endif %}
       </dl>
 
       <div class="section-label">Description</div>

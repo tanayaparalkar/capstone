@@ -10,7 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ..contracts import AIEnrichedFinding, ScanResult, ScannerFinding
-from ..core import SEVERITY_RANK, format_location
+from ..core import SEVERITY_RANK, build_ai_lookup, format_location
 from .console import SEVERITY_BORDER_STYLE, SEVERITY_STYLE
 
 
@@ -19,7 +19,7 @@ def render_findings_table(console: Console, result: ScanResult) -> None:
     # ascending (low->high) order rather than keeping a second, inverted
     # ranking dict here.
     findings = sorted(result.scanner_findings, key=lambda f: -SEVERITY_RANK[f.severity])
-    ai_by_id = {f.finding_id: f for f in result.ai_findings}
+    ai_by_id = build_ai_lookup(result)
 
     table = Table(title=f"SentinelAI Findings - {result.repository.name}", show_lines=False)
     table.add_column("ID", style="dim", min_width=8, no_wrap=True)

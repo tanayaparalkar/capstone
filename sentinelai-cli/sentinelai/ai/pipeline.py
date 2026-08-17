@@ -92,7 +92,13 @@ whether to run a stage at all), not stage-internal logic.
 import logging
 from typing import Callable, Optional
 
-from sentinelai.contracts import AIEnrichedFinding, ConfidenceLabel, ScannerFinding, VerificationStatus
+from sentinelai.contracts import (
+    AIEnrichedFinding,
+    ConfidenceLabel,
+    CorrelatedFinding,
+    ScannerFinding,
+    VerificationStatus,
+)
 from sentinelai.core.errors import AIEnrichmentError
 
 from .agents.critic import critique
@@ -165,8 +171,20 @@ def enrich_findings(
     score_confidence: ConfidenceScorerFn,
     verify_finding: VerifierFn,
     repository_context: Optional[RepositoryContext] = None,
+    correlated_findings: Optional[list[CorrelatedFinding]] = None,
 ) -> list[AIEnrichedFinding]:
     ctx = repository_context or RepositoryContext()
+
+    # Enrich once per correlated issue, not once per raw scanner hit. Two scanners
+    # reporting one defect is one thing to explain, and paying three model calls
+    # per duplicate would be waste, not thoroughness. When no correlation is
+    # supplied - an older caller, or a provider that predates it - every finding
+    # is its own group, which reproduces the previous per-finding behaviour exactly.
+    groups = correlated_findings if correlated_findings is not None else []
+    canonical_ids = {g.canonical_finding_id for g in groups}
+    group_by_canonical = {g.canonical_finding_id: g for g in groups}
+    if groups:
+        scanner_findings = [f for f in scanner_findings if f.finding_id in canonical_ids]
     settings = get_settings()
     logger.info(
         "AI pipeline: enriching %d findings (verification=%s)",
@@ -178,9 +196,21 @@ def enrich_findings(
     failures: list[tuple[str, Exception]] = []
     for finding in scanner_findings:
         try:
-            results.append(
-                _enrich_one(finding, ctx, retriever, generate, score_confidence, verify_finding, settings)
+            enriched = _enrich_one(
+                finding, ctx, retriever, generate, score_confidence, verify_finding, settings
             )
+            group = group_by_canonical.get(finding.finding_id)
+            if group is not None:
+                # finding_id deliberately stays the canonical *raw* id so existing
+                # raw-finding -> AI joins keep working; the group view is additive.
+                enriched = enriched.model_copy(
+                    update={
+                        "correlation_id": group.correlation_id,
+                        "source_finding_ids": list(group.source_finding_ids),
+                        "scanner_sources": list(group.scanners),
+                    }
+                )
+            results.append(enriched)
         except Exception as exc:
             # WARNING, not ERROR: the run continues and the outcome is reported.
             # With no logging handler configured (this project's default), Python's

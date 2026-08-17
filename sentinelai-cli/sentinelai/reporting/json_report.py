@@ -27,6 +27,10 @@ def build_json_report(result: ScanResult, statistics: ScanStatistics) -> JSONRep
         findings=ReportFindings(
             scanner=sorted(result.scanner_findings, key=lambda f: f.finding_id),
             ai_enriched=sorted(result.ai_findings, key=lambda f: f.finding_id),
+            # Sorted by correlation_id, which the correlator already assigns from a
+            # content-based ordering - so the serialized report is deterministic for
+            # the same scan regardless of the order scanners ran in.
+            correlated=sorted(result.correlated_findings, key=lambda c: c.correlation_id),
         ),
     )
 

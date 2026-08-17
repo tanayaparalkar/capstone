@@ -35,6 +35,8 @@ def calculate_statistics(result: ScanResult) -> ScanStatistics:
         scanner_counts=scanner_counts,
         category_counts=category_counts,
         ai_enrichment_status=ai_enrichment_status,
+        correlated_findings=len(result.correlated_findings),
+        multi_scanner_findings=sum(1 for c in result.correlated_findings if c.is_multi_scanner),
         matched_ai_findings=matched_ai_findings,
         confidence=confidence,
         verification_counts=verification_counts,

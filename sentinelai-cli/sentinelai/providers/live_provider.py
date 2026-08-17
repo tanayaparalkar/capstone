@@ -68,6 +68,7 @@ from sentinelai.backend.context_builder import build_repository_context
 from sentinelai.backend.loader import load_repository
 from sentinelai.contracts import RepositoryInfo, ScanMetadata, ScanMode, ScanResult
 from sentinelai.core.errors import ProviderError
+from sentinelai.correlation import correlate_findings
 from sentinelai.scanners.bandit import BanditScanner
 from sentinelai.scanners.base import Scanner
 from sentinelai.scanners.gitleaks import GitleaksScanner
@@ -120,6 +121,9 @@ class LiveFindingsProvider(FindingsProvider):
                 metadata=ScanMetadata(timestamp=datetime.now(timezone.utc), mode=mode),
                 scanner_findings=scanner_findings,
                 ai_findings=[],
+                # Deterministic and offline, so it runs in scanner-only mode too -
+                # correlation needs no model and no configuration.
+                correlated_findings=correlate_findings(scanner_findings),
             )
         except Exception as exc:
             logger.error("LiveFindingsProvider: scan of '%s' failed: %s", repo_path, exc)

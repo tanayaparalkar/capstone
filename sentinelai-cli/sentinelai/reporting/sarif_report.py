@@ -55,7 +55,7 @@ from typing import Optional
 
 from .. import __version__
 from ..contracts import AIEnrichedFinding, ScanResult, ScannerFinding, Severity
-from ..core import normalize_file_uri
+from ..core import build_ai_lookup, build_correlation_lookup, normalize_file_uri
 from ..statistics import ScanStatistics
 
 SARIF_SCHEMA_URI = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
@@ -71,10 +71,15 @@ _SEVERITY_TO_LEVEL = {
 
 def build_sarif_report(result: ScanResult, statistics: ScanStatistics) -> dict:
     scanner_findings = sorted(result.scanner_findings, key=lambda f: f.finding_id)
-    ai_by_id = {a.finding_id: a for a in result.ai_findings}
+    ai_by_id = build_ai_lookup(result)
+    corr_by_id = build_correlation_lookup(result)
 
     rules, rule_index_by_id = _build_rules(scanner_findings)
-    results = [_build_result(f, ai_by_id.get(f.finding_id), rule_index_by_id) for f in scanner_findings]
+    # One SARIF result per RAW finding: consumers must still see every location.
+    results = [
+        _build_result(f, ai_by_id.get(f.finding_id), rule_index_by_id, corr_by_id.get(f.finding_id))
+        for f in scanner_findings
+    ]
 
     return {
         "$schema": SARIF_SCHEMA_URI,
@@ -130,7 +135,7 @@ def _build_rules(scanner_findings: list[ScannerFinding]) -> tuple:
     return rules, rule_index_by_id
 
 
-def _build_result(f: ScannerFinding, ai: Optional[AIEnrichedFinding], rule_index_by_id: dict) -> dict:
+def _build_result(f: ScannerFinding, ai: Optional[AIEnrichedFinding], rule_index_by_id: dict, corr=None) -> dict:
     rule_id = _rule_id(f)
     result: dict = {
         "ruleId": rule_id,
@@ -154,6 +159,13 @@ def _build_result(f: ScannerFinding, ai: Optional[AIEnrichedFinding], rule_index
         properties["cwe"] = f.cwe
     if f.raw_evidence:
         properties["rawEvidence"] = f.raw_evidence
+    if corr is not None:
+        # Raw scanner ids are preserved above; these add the group view alongside.
+        properties["correlationId"] = corr.correlation_id
+        properties["canonicalFindingId"] = corr.canonical_finding_id
+        properties["sourceFindingIds"] = corr.source_finding_ids
+        properties["correlatedScanners"] = corr.scanners
+        properties["correlationReason"] = corr.correlation_reason
     if ai is not None:
         properties["ai"] = _ai_properties(ai)
 

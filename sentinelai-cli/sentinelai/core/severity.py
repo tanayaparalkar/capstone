@@ -35,6 +35,11 @@ def filter_by_severity(result: ScanResult, min_severity: Severity) -> ScanResult
         update={
             "scanner_findings": [f for f in result.scanner_findings if SEVERITY_RANK[f.severity] >= threshold],
             "ai_findings": [f for f in result.ai_findings if SEVERITY_RANK[f.severity] >= threshold],
+            # Filtered alongside the other two so the raw and correlated counts a
+            # report shows always describe the same filtered result.
+            "correlated_findings": [
+                c for c in result.correlated_findings if SEVERITY_RANK[c.severity] >= threshold
+            ],
         }
     )
 

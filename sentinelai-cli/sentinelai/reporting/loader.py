@@ -77,6 +77,11 @@ def load_scan_result(path: Path) -> tuple:
         metadata=report.scan,
         scanner_findings=report.findings.scanner,
         ai_findings=report.findings.ai_enriched,
+        # Reconstructed, not recomputed: correlation is deterministic, but re-running
+        # it here would silently re-derive groups from a possibly hand-edited report
+        # rather than reporting what the scan actually found. Absent in a
+        # pre-correlation report, where it validates to [].
+        correlated_findings=report.findings.correlated,
     )
     statistics: ScanStatistics = calculate_statistics(result)
     return result, statistics

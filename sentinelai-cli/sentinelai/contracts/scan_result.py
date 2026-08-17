@@ -14,6 +14,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from .ai_finding import AIEnrichedFinding
+from .correlated_finding import CorrelatedFinding
 from .scanner_finding import ScannerFinding
 
 
@@ -42,3 +43,12 @@ class ScanResult(BaseModel):
     metadata: ScanMetadata
     scanner_findings: list[ScannerFinding] = Field(default_factory=list)
     ai_findings: list[AIEnrichedFinding] = Field(default_factory=list)
+    correlated_findings: list[CorrelatedFinding] = Field(
+        default_factory=list,
+        description=(
+            "Raw findings grouped into logical issues by sentinelai.correlation. An index over "
+            "scanner_findings, never a replacement: every raw finding is preserved above and "
+            "appears in exactly one group here. Empty for reports written before correlation "
+            "existed, which is what keeps those reports loadable."
+        ),
+    )

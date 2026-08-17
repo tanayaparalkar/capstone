@@ -24,13 +24,14 @@ from datetime import datetime
 from typing import Optional
 
 from ..contracts import AIEnrichedFinding, ScanResult, ScannerFinding
-from ..core import format_location
+from ..core import build_ai_lookup, build_correlation_lookup, format_location
 from ..statistics import ScanStatistics
 
 
 def to_markdown(result: ScanResult, statistics: ScanStatistics) -> str:
     scanner_findings = sorted(result.scanner_findings, key=lambda f: f.finding_id)
-    ai_by_id = {f.finding_id: f for f in result.ai_findings}
+    ai_by_id = build_ai_lookup(result)
+    corr_by_id = build_correlation_lookup(result)
 
     sections = [
         "# SentinelAI Security Report",
@@ -40,7 +41,7 @@ def to_markdown(result: ScanResult, statistics: ScanStatistics) -> str:
 
     if scanner_findings:
         sections.append(_findings_overview(scanner_findings, ai_by_id))
-        sections.append(_detailed_findings(scanner_findings, ai_by_id))
+        sections.append(_detailed_findings(scanner_findings, ai_by_id, corr_by_id))
     else:
         sections.append("## Findings\n\nNo findings were reported for this scan.")
 
@@ -56,6 +57,8 @@ def _executive_summary(result: ScanResult, stats: ScanStatistics) -> str:
         f"- **Scan Timestamp:** {_iso(stats.timestamp)}",
         f"- **Scan Duration:** {_duration(stats.duration_seconds)}",
         f"- **Total Findings:** {stats.total_findings}",
+        f"- **Correlated Issues:** {stats.correlated_findings}"
+        + (f" ({stats.multi_scanner_findings} confirmed by 2+ scanners)" if stats.multi_scanner_findings else ""),
         f"- **AI Enrichment:** {stats.ai_enrichment_status.value}",
         "",
         "| Severity | Count |",
@@ -115,14 +118,14 @@ def _findings_overview(scanner_findings: list[ScannerFinding], ai_by_id: dict[st
     return "\n".join(lines)
 
 
-def _detailed_findings(scanner_findings: list[ScannerFinding], ai_by_id: dict[str, AIEnrichedFinding]) -> str:
+def _detailed_findings(scanner_findings, ai_by_id, corr_by_id) -> str:
     sections = ["## Detailed Findings"]
     for f in scanner_findings:
-        sections.append(_finding_section(f, ai_by_id.get(f.finding_id)))
+        sections.append(_finding_section(f, ai_by_id.get(f.finding_id), corr_by_id.get(f.finding_id)))
     return "\n\n".join(sections)
 
 
-def _finding_section(f: ScannerFinding, ai: Optional[AIEnrichedFinding]) -> str:
+def _finding_section(f: ScannerFinding, ai: Optional[AIEnrichedFinding], corr=None) -> str:
     lines = [
         f"### {f.finding_id} — {f.category} ({f.severity.value.upper()})",
         "",
@@ -132,6 +135,16 @@ def _finding_section(f: ScannerFinding, ai: Optional[AIEnrichedFinding]) -> str:
     ]
     if f.cwe:
         lines.append(f"- **CWE:** {f.cwe}")
+    # Make the canonical/source relationship visible: a reader must be able to see
+    # that this raw finding was grouped, which other raw findings it was grouped
+    # with, and on what basis.
+    if corr is not None and len(corr.source_finding_ids) > 1:
+        others = [i for i in corr.source_finding_ids if i != f.finding_id]
+        role = "canonical" if corr.canonical_finding_id == f.finding_id else "grouped under " + corr.canonical_finding_id
+        lines.append(f"- **Correlated Issue:** {corr.correlation_id} ({role})")
+        lines.append(f"- **Grouped With:** {', '.join(others)}")
+        lines.append(f"- **Correlated Scanners:** {', '.join(corr.scanners)}")
+        lines.append(f"- **Correlation Basis:** {corr.correlation_reason}")
 
     lines += ["", "**Description**", "", f.message]
 

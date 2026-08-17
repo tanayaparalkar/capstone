@@ -75,6 +75,26 @@ class AIEnrichedFinding(BaseModel):
     )
     references: list[str] = Field(default_factory=list, description="External references, e.g. CWE/OWASP links")
 
+    # Correlation linkage. finding_id above deliberately keeps its original meaning -
+    # the canonical *raw* ScannerFinding this enrichment is about - so every existing
+    # raw-finding -> AI join keeps working untouched. These two fields add the group
+    # view alongside it rather than redefining it.
+    correlation_id: Optional[str] = Field(
+        None,
+        description=(
+            "CorrelatedFinding.correlation_id of the group this enrichment covers. None when "
+            "the scan predates correlation. Renderers use it to resolve enrichment for the "
+            "non-canonical raw findings in a group."
+        ),
+    )
+    source_finding_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every raw finding_id in the correlated group, including the canonical one. Empty "
+            "for reports written before correlation existed."
+        ),
+    )
+
     # Critic-agent review signals. All three are optional with defaults so that a
     # report written before the multi-agent pipeline existed still loads: a saved
     # JSON report with none of these keys validates and simply carries None/[],
