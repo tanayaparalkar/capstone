@@ -4,8 +4,8 @@ Viraj's piece of SentinelAI: the Typer-based CLI that drives a scan and
 renders the results. It depends only on the `FindingsProvider` interface
 (see `docs/CONTRACTS.md`), not on any specific data source. By default
 `sentinelai scan` uses `LiveFindingsProvider` — Nithanth's real backend
-and scanner framework (Semgrep, Bandit, GitLeaks) — via `_get_provider()`
-in `main.py`. `MockFindingsProvider`, backed by a bundled sample dataset,
+and scanner framework (Semgrep, Bandit, GitLeaks; plus Trivy and
+OSV-Scanner with `--extended`) — via `_get_provider()` in `main.py`. `MockFindingsProvider`, backed by a bundled sample dataset,
 remains available and is what the CLI's own test suite pins itself to,
 for deterministic, tool-free assertions. AI enrichment (Tanaya's layer)
 is opt-in on top of either provider — see "AI Enrichment Configuration"
@@ -46,14 +46,108 @@ jobs, and the difference is mostly latency:
 | Output | findings, severities, all report formats, `--fail-on` gating | the same, plus a per-finding explanation, impact, and remediation |
 | Best for | **CI gating** — fast, deterministic, no secrets | **local triage** — reading and understanding findings |
 
-Both modes run Semgrep, Bandit, and GitLeaks and produce every report format.
-Scanner-only is not a degraded mode: it is what this project's own CI runs on
-every push.
+Both modes run the core scanner set (Semgrep, Bandit, GitLeaks) and produce
+every report format. Scanner-only is not a degraded mode: it is what this
+project's own CI runs on every push. Dependency scanning is a separate,
+opt-in axis — see "Scanner tiers" below.
 
 Because AI-enriched mode is sequential and issues one request per finding, its
 runtime scales with finding count, which is why it is documented as a local
 developer-triage workflow rather than a CI gate. Measured figures for both modes
 are in `../PAPER_RESULTS.md`.
+
+## Scanner tiers
+
+Which scanners run is a separate axis from `--quick`/`--full` (a depth
+control) and from AI enrichment. There are two tiers:
+
+| Tier | Scanners | How to run |
+|---|---|---|
+| **core** (default) | Semgrep, Bandit, GitLeaks | `sentinelai scan .` |
+| **extended** (opt-in) | the core three **plus** Trivy and OSV-Scanner | `sentinelai scan . --extended` |
+
+Extended is a superset: `--extended` adds dependency scanning, it never
+takes code scanning away. `--full` does **not** imply `--extended` — an
+existing command keeps running exactly the scanners it always ran.
+
+The tier is recorded in every report as `scan.scanner_tier`, so a finding
+count can always be read against the scanner set that produced it.
+
+### Prerequisites
+
+**Core scans need nothing new.** `sentinelai scan` runs Semgrep, Bandit, and
+GitLeaks only; Trivy and OSV-Scanner do not have to be installed, and a core
+scan succeeds on a machine that has neither.
+
+**Extended scans require all three of:**
+
+1. **Trivy** on `PATH` — verified against **0.74.0**.
+2. **OSV-Scanner** on `PATH` — verified against **2.5.1**.
+3. **A dependency source OSV recognizes** in the scanned tree (a
+   `requirements.txt`, lockfile, SBOM, and so on).
+
+```bash
+brew install trivy osv-scanner        # macOS; see each project for Linux
+```
+
+Miss any one of the three and `--extended` fails closed with `PROVIDER_ERROR`
+(**exit 3**) rather than silently reporting fewer findings. In particular, a
+repository with **no recognized OSV package source** returns exit 3: OSV-Scanner
+exits 128 with `No package sources found`, and SentinelAI treats that as a
+scanner failure, not an empty result. If you want to scan such a repository,
+drop `--extended` — the core tier covers it.
+
+### The dependency scanners
+
+Both are invoked as subprocesses, exactly like the core three.
+
+- **Trivy** runs as `trivy fs --scanners vuln --format json`. Vulnerability
+  scanning only — Trivy's secret scanner is deliberately *not* enabled, since
+  GitLeaks is this project's dedicated secret scanner and enabling both would
+  report every secret twice. It needs a local vulnerability database, which it
+  downloads on first use (~108 MB, then cached).
+- **OSV-Scanner** runs as `osv-scanner scan source --format json`. It queries
+  osv.dev at scan time, so it needs network access, and it also resolves
+  *transitive* dependencies that never appear in your manifest.
+
+**OSV group-level deduplication.** OSV reports the same underlying issue once
+per advisory database that carries it, then states the equivalence itself in
+`groups[].ids`. On the benchmark repository that is 50 raw `vulnerabilities`
+entries covering 25 distinct issues, every one a PYSEC/GHSA pair. SentinelAI
+emits **one finding per group, not per advisory record**, so those 25 issues
+produce 25 findings rather than 50. Nothing is discarded: every group id and
+alias (including the CVE) is preserved in the finding's message and evidence.
+
+### How dependency findings differ
+
+Dependency findings are **manifest-scoped and line-less**. A dependency
+vulnerability belongs to the package, not to the line of the manifest that
+happens to declare it, so these findings carry a `file` (the manifest path,
+relative to the repository root) but **no `line_start` or `line_end`**. Because
+the correlation heuristic requires a source location, they are never merged —
+each stays its own singleton issue.
+
+That is a deliberate accuracy decision. Trivy does expose package-level line
+numbers, and using them was measured to be actively wrong on this project's own
+benchmark: `CVE-2020-14343` and `CVE-2020-1747` both map to pyyaml at line 2
+under CWE-20, so line-based correlation would have collapsed two distinct
+advisories into one issue.
+
+### Known limitation: Trivy and OSV findings are not merged
+
+Trivy and OSV-Scanner **may describe the same vulnerable dependency through
+different advisory identifiers** — Trivy reports CVEs, OSV reports GHSA/PYSEC
+groups that list the CVE as an alias. On the benchmark repository all 12 of
+Trivy's direct-dependency CVEs are also reported by OSV-Scanner, so those
+issues appear twice, once per tool.
+
+They are deliberately left separate for now. SentinelAI's correlation heuristic
+is **source-location and CWE based**, and it does not merge manifest-scoped
+dependency advisories — extending it to do so on package name, installed
+version, and advisory alias sets would be a different kind of rule, not a
+tuning of the existing one. **Dependency-aware advisory/alias correlation is
+future work.** Until then, read a `--extended` dependency count as raw findings
+across two tools, not as a count of distinct vulnerabilities.
 
 ## AI Enrichment Configuration
 
@@ -594,11 +688,20 @@ even when something goes wrong.
 1. checks out the repository and sets up Python 3.12
 2. installs SentinelAI from `pyproject.toml` (`pip install -e ".[dev]"`) — no dependency list duplicated into the workflow
 3. runs the full test suite (`pytest -v`) — a test failure stops the workflow before SentinelAI ever runs, and is never reported as a security finding
-4. installs Semgrep, Bandit, and GitLeaks — the three scanners `LiveFindingsProvider`'s default registry needs on `PATH` to run at all
+4. installs Semgrep, Bandit, and GitLeaks — the core-tier scanners the scan in step 6 needs on `PATH` to run at all
 5. runs SentinelAI **once**, against this repository, through the real `LiveFindingsProvider`: `sentinelai scan . --format json --output scan-result.json --fail-on high`
 6. generates SARIF and HTML from that *saved* result (`sentinelai report scan-result.json --format sarif|html ...`) — the repository is never re-scanned
 7. uploads `scan-result.json`, `sentinelai-results.sarif`, and `sentinelai-report.html` as a single `sentinelai-security-reports` artifact, unconditionally (`if: always()`), so reports are preserved even when the gate or the tool itself fails
 8. evaluates the captured scan exit code and fails the job with a clearly labeled message distinguishing a security-policy failure (exit `1`) from a tool failure (exit `2`/`3`/`4`)
+
+The gate scan runs the **core** tier, and the workflow deliberately does not
+install Trivy or OSV-Scanner. Nothing in it runs an extended scan — the gate is
+core-tier because dependency advisories are published and amended continuously,
+so gating on them would fail the job on days when nothing in this repository
+changed, and `pytest -v` excludes the benchmark-marked tests that use those
+binaries. Installing tools no step consumes would only add two more ways for CI
+to fail. `.github/workflows/ci.yml` carries the pinned install recipe as a
+comment for whoever adds an extended job later.
 
 `sentinelai scan` always uses `LiveFindingsProvider` — there is no flag
 or environment variable to select `MockFindingsProvider` instead, so

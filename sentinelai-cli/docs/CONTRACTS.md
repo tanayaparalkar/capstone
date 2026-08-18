@@ -45,6 +45,23 @@ Backend Foundation).
 finding maps to a specific source line — a vulnerable dependency version
 in `requirements.txt` is a valid finding with only a `file`, or none at all.
 
+**Dependency findings are manifest-scoped and line-less.** Trivy and OSV
+Scanner set `file` to the manifest path (relative to the repository root) and
+leave `line_start`/`line_end` unset. A dependency vulnerability is a property
+of the package, not of the line that happens to declare it, and both tools'
+line data was measured to be actively misleading: `CVE-2020-14343` and
+`CVE-2020-1747` share pyyaml's line 2 under CWE-20, so a line-based rule would
+merge two distinct advisories. Because correlation requires a source location,
+these findings are always singleton groups — see "Scanner tiers" under
+`ScanResult` below.
+
+**OSV Scanner emits one finding per advisory *group*, not per record.** OSV
+reports the same issue once per advisory database carrying it and states the
+equivalence in `groups[].ids` (on the benchmark repository: 50 records, 25
+groups, each a PYSEC/GHSA pair). The wrapper emits one `ScannerFinding` per
+group and preserves every group id and alias — including the CVE — in
+`message` and `raw_evidence`, so the deduplication loses no identifier.
+
 ---
 
 ## `AIEnrichedFinding`
@@ -106,7 +123,39 @@ class ScanResult(BaseModel):
   `languages` (all optional).
 - `ScanMetadata` — `timestamp`, `mode` (`quick \| standard \| full`,
   required), `duration_seconds` (optional, filled in once the scan
-  finishes).
+  finishes), `scanner_tier` (`core \| extended`, defaults to `core`).
+- `ScannerTier` — which scanner *set* ran, an axis orthogonal to
+  `ScanMode`'s depth control. It defaults to `core`, so a report written
+  before the tier existed still loads and reads correctly.
+
+### Scanner tiers
+
+| Tier | Membership | Selected by |
+|---|---|---|
+| `core` (default) | Semgrep, Bandit, GitLeaks | `sentinelai scan <path>` |
+| `extended` | Semgrep, Bandit, GitLeaks, **Trivy, OSV Scanner** | `sentinelai scan <path> --extended` |
+
+`extended` is a strict superset of `core`, never a replacement. `ScanMode`
+(`quick`/`standard`/`full`) does not affect membership — `--full` does not
+imply `--extended`, so an existing invocation runs exactly the scanners it
+always ran. Membership lives on each `ScannerRegistry` registration, and
+`ScanMetadata.scanner_tier` records which set produced a given result, so a
+finding count can always be read against the scanner set behind it.
+
+**Extended-scan prerequisites.** Trivy and OSV Scanner must both be on `PATH`,
+and the scanned tree must contain a dependency source OSV recognizes. A
+repository with no recognized OSV package source produces `PROVIDER_ERROR`
+(exit 3) under `--extended`: OSV exits 128 with `No package sources found`, and
+that is treated as a scanner failure, not an empty result. Core scans require
+neither binary and succeed on a machine that has neither.
+
+**Known limitation — dependency findings are not cross-correlated.** Trivy and
+OSV Scanner may describe the same vulnerable dependency through different
+advisory identifiers (Trivy reports CVEs; OSV reports GHSA/PYSEC groups that
+carry the CVE as an alias), so the same issue can appear as two raw findings.
+The correlation heuristic is source-location and CWE based and deliberately
+does not merge manifest-scoped dependency advisories. Dependency-aware
+advisory/alias correlation is future work.
 
 **How the two finding layers connect:** `scanner_findings` and
 `ai_findings` are two parallel lists, not a nested structure. A finding
@@ -131,7 +180,12 @@ Pydantic models fall back to defaults for anything not explicitly set.
 ```python
 class FindingsProvider(ABC):
     @abstractmethod
-    def get_scan_result(self, repo_path: str, mode: ScanMode = ScanMode.STANDARD) -> ScanResult:
+    def get_scan_result(
+        self,
+        repo_path: str,
+        mode: ScanMode = ScanMode.STANDARD,
+        tier: ScannerTier = ScannerTier.CORE,
+    ) -> ScanResult:
         ...
 ```
 
@@ -141,8 +195,10 @@ than aspirational. Two implementations exist today:
 
 - `LiveFindingsProvider` — the default (`main.py`'s `_get_provider()`
   returns this unconditionally). Loads the target repository through
-  Nithanth's backend and runs Semgrep, Bandit, and GitLeaks against it
-  via `ScannerOrchestrator`, returning a real `ScanResult` with
+  Nithanth's backend and runs the scanners for the requested `tier`
+  against it via `ScannerOrchestrator` — Semgrep, Bandit, and GitLeaks
+  for `core` (the default), plus Trivy and OSV Scanner for `extended`
+  (`sentinelai scan --extended`) — returning a real `ScanResult` with
   `ai_findings` empty (AI enrichment, when configured, is applied
   separately by the CLI — see the AI-layer sections above).
 - `MockFindingsProvider` — reads a bundled JSON fixture instead of

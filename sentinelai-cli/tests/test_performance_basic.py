@@ -78,6 +78,13 @@ BENCHMARK_REPO = Path(__file__).resolve().parents[2] / "sentinelai-manual-test"
 # multi-scanner-invoked-twice bug).
 SCANNER_ONLY_BUDGET_SECONDS = 45.0
 
+# The extended tier adds Trivy (local database lookup, sub-second once warm)
+# and OSV-Scanner (network round-trips to osv.dev, ~4s observed locally) on
+# top of the core scan, so its ceiling is the core budget plus headroom for
+# a slow network. Same reasoning as above: a regression guard, not a
+# reported figure.
+EXTENDED_SCAN_BUDGET_SECONDS = 120.0
+
 # Reporting is pure in-process serialization of already-computed data - no
 # subprocess, no I/O beyond stdout. Milliseconds in practice; generous here
 # only to stay robust on a slow/loaded machine, not because it's expected
@@ -96,6 +103,11 @@ AI_ENRICHED_BUDGET_SECONDS = 600.0
 _REQUIRED_SCANNERS = ("semgrep", "bandit", "gitleaks")
 _missing_scanners = [tool for tool in _REQUIRED_SCANNERS if shutil.which(tool) is None]
 
+# The extended tier's two dependency scanners, guarded separately: the core
+# benchmark below must still run on a machine that has only the core three.
+_DEPENDENCY_SCANNERS = ("trivy", "osv-scanner")
+_missing_dependency_scanners = [tool for tool in _DEPENDENCY_SCANNERS if shutil.which(tool) is None]
+
 
 def _run_scan(*extra_args: str) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(
@@ -112,12 +124,20 @@ def _run_scan(*extra_args: str) -> "subprocess.CompletedProcess[str]":
     _missing_scanners, reason=f"required scanner(s) not on PATH: {', '.join(_missing_scanners)}"
 )
 def test_scanner_only_scan_completes_within_budget(tmp_path):
-    """A full scanner-only scan of the benchmark repo finishes well inside a generous ceiling.
+    """A full CORE scanner-only scan of the benchmark repo finishes well inside a generous ceiling.
 
     Also asserts the finding count is exactly the number verified by hand
     in sentinelai-manual-test/README.md (17: 10 Bandit + 6 Semgrep + 1
     GitLeaks) - static analysis is deterministic, so any drift here means
     a scanner wrapper, not the environment, changed behavior.
+
+    The 17 is a statement about the *core* scanner set specifically, not
+    about "whatever scanners happen to be registered". Registering Trivy and
+    OSV-Scanner did not change it, because they are extended-tier and this
+    scan does not pass --extended - and the assertion below on
+    scanner_tier is what keeps that explicit rather than incidental, so a
+    future default-tier change fails here loudly instead of silently
+    rewriting the baseline.
     """
     output_path = tmp_path / "scan-result.json"
 
@@ -131,8 +151,68 @@ def test_scanner_only_scan_completes_within_budget(tmp_path):
     )
 
     data = json.loads(output_path.read_text(encoding="utf-8"))
+    assert data["scan"]["scanner_tier"] == "core"
     assert len(data["findings"]["scanner"]) == 17
+    assert {f["scanner"] for f in data["findings"]["scanner"]} == {"semgrep", "bandit", "gitleaks"}
+    assert len(data["findings"]["correlated"]) == 13
     assert data["findings"]["ai_enriched"] == []
+
+
+@pytest.mark.benchmark
+@pytest.mark.skipif(not BENCHMARK_REPO.is_dir(), reason=f"benchmark repo not found at {BENCHMARK_REPO}")
+@pytest.mark.skipif(
+    _missing_scanners or _missing_dependency_scanners,
+    reason=f"required scanner(s) not on PATH: {', '.join(_missing_scanners + _missing_dependency_scanners)}",
+)
+def test_extended_scan_adds_dependency_findings_without_disturbing_the_core_ones(tmp_path):
+    """The extended tier is measured separately from the frozen core baseline.
+
+    Deliberately asserts structure rather than a total. The core figures (17
+    raw / 13 correlated / 4 multi-scanner) are pinned exactly because static
+    analysis of a fixed tree is deterministic. Dependency counts are not: they
+    move whenever an advisory is published or an affected range is amended,
+    and OSV additionally resolves transitive packages from the registry at
+    scan time. Pinning a total here would make this test fail for reasons that
+    have nothing to do with SentinelAI. What must hold regardless is that
+    every core finding survives unchanged, that dependency findings carry no
+    line numbers, and that they therefore never merge into a correlation group.
+    """
+    output_path = tmp_path / "extended-result.json"
+
+    started = time.perf_counter()
+    result = _run_scan("--extended", "--format", "json", "--output", str(output_path))
+    elapsed = time.perf_counter() - started
+
+    assert result.returncode == 0, result.stderr
+    assert elapsed < EXTENDED_SCAN_BUDGET_SECONDS, (
+        f"extended scan took {elapsed:.1f}s, budget is {EXTENDED_SCAN_BUDGET_SECONDS}s"
+    )
+
+    data = json.loads(output_path.read_text(encoding="utf-8"))
+    findings = data["findings"]["scanner"]
+    core = [f for f in findings if f["scanner"] in {"semgrep", "bandit", "gitleaks"}]
+    dependency = [f for f in findings if f["scanner"] in {"trivy", "osv-scanner"}]
+
+    assert data["scan"]["scanner_tier"] == "extended"
+    # The frozen core baseline is untouched by the extra scanners.
+    assert len(core) == 17
+    assert {f["scanner"] for f in dependency} == {"trivy", "osv-scanner"}
+    assert dependency, "extended tier produced no dependency findings"
+
+    # No synthesized line numbers, so no dependency finding can be correlated.
+    assert all(f["line_start"] is None and f["line_end"] is None for f in dependency)
+    correlated = data["findings"]["correlated"]
+    dependency_ids = {f["finding_id"] for f in dependency}
+    assert all(
+        len(group["source_finding_ids"]) == 1
+        for group in correlated
+        if dependency_ids & set(group["source_finding_ids"])
+    )
+    # Multi-scanner corroboration still comes only from the code scanners.
+    assert sum(1 for g in correlated if len(set(g["scanners"])) > 1) == 4
+
+    # finding_id is the join key every renderer indexes on.
+    assert len({f["finding_id"] for f in findings}) == len(findings)
 
 
 def test_json_report_generation_is_fast():

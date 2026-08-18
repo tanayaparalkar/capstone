@@ -51,12 +51,13 @@ jobs:
       - name: Run test suite
         run: pytest -v
 
-      # LiveFindingsProvider's default scanner registry (see
-      # sentinelai/providers/live_provider.py's _default_registry())
-      # shells out to these three executables by their bare name -
-      # without this step, "Run SentinelAI scan" below fails with
-      # PROVIDER_ERROR because the first missing tool aborts the whole
-      # scan (ScannerOrchestrator fails closed on the first failure).
+      # The core scanner tier (see sentinelai/providers/live_provider.py's
+      # _default_registry()) shells out to these three executables by
+      # their bare name - without this step, "Run SentinelAI scan" below
+      # fails with PROVIDER_ERROR because the first missing tool aborts
+      # the whole scan (ScannerOrchestrator fails closed on the first
+      # failure). The scan below runs the core tier, so these three are
+      # what it strictly requires.
       - name: Install scanner tools (Semgrep, Bandit, GitLeaks)
         env:
           # Pinned, not "latest": CI should be deterministic - a new
@@ -72,6 +73,38 @@ jobs:
           semgrep --version
           bandit --version
           gitleaks version
+
+      # Trivy and OSV-Scanner - the extended tier's dependency scanners -
+      # are deliberately NOT installed here.
+      #
+      # This workflow never runs an extended scan. The gate scan below is
+      # core-tier (dependency advisories are published and amended
+      # continuously, so gating on them would fail this job on days when
+      # nothing in this repository changed), and the "Run test suite" step
+      # above excludes the benchmark-marked tests that would use them -
+      # pyproject.toml sets `addopts = "-m 'not benchmark'"`. Installing
+      # two binaries no step consumes would add two network downloads and
+      # two more ways for this job to fail, for nothing: it would make the
+      # core scan depend on the dependency scanners without ever using
+      # them.
+      #
+      # To add an extended job later, this is the verified recipe - the
+      # exact versions the Trivy/OSV wrappers' documented JSON-shape and
+      # exit-code behavior were confirmed against, pinned for the same
+      # reason GITLEAKS_VERSION is:
+      #
+      #   - name: Install dependency scanner tools (Trivy, OSV-Scanner)
+      #     env:
+      #       TRIVY_VERSION: "0.74.0"
+      #       OSV_SCANNER_VERSION: "2.5.1"
+      #     run: |
+      #       curl -sSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o trivy.tar.gz
+      #       tar -xzf trivy.tar.gz trivy && sudo mv trivy /usr/local/bin/trivy && rm trivy.tar.gz
+      #       curl -sSL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" -o osv-scanner
+      #       chmod +x osv-scanner && sudo mv osv-scanner /usr/local/bin/osv-scanner
+      #
+      # That job must also stay separate from the gate below, which
+      # asserts a single `sentinelai scan` invocation.
 
       # SentinelAI's own --fail-on threshold can legitimately exit 1
       # (SECURITY_FINDINGS). That must not be treated as a broken CI

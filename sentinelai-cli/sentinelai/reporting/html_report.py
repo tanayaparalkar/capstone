@@ -69,6 +69,7 @@ def _build_context(result: ScanResult, stats: ScanStatistics) -> dict:
 
     return {
         "repository": result.repository,
+        "scanner_tier": result.metadata.scanner_tier.value,
         "stats": stats,
         "findings": findings,
         "severity_bars": _severity_bars(stats),

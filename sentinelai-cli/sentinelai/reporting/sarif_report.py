@@ -97,6 +97,7 @@ def build_sarif_report(result: ScanResult, statistics: ScanStatistics) -> dict:
                 "results": results,
                 "properties": {
                     "sentinelai": {
+                        "scannerTier": result.metadata.scanner_tier.value,
                         "statistics": statistics.model_dump(mode="json"),
                     }
                 },

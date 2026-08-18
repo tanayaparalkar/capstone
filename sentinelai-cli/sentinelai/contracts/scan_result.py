@@ -24,6 +24,26 @@ class ScanMode(str, Enum):
     FULL = "full"
 
 
+class ScannerTier(str, Enum):
+    """Which set of scanners a scan ran - an axis orthogonal to ScanMode.
+
+    ScanMode is a depth control over the checks a scanner performs;
+    ScannerTier is which scanners run at all. They are deliberately not
+    merged: folding dependency scanning into ScanMode.FULL would silently
+    change what an existing `--full` scan means and what its findings
+    count, whereas a separate axis leaves every existing invocation
+    producing exactly what it produced before.
+
+    CORE is Semgrep + Bandit + GitLeaks, the set every scan has always
+    run and the set the project's frozen performance baseline is measured
+    against. EXTENDED adds the dependency scanners (Trivy, OSV-Scanner)
+    and is opt-in, never a default.
+    """
+
+    CORE = "core"
+    EXTENDED = "extended"
+
+
 class RepositoryInfo(BaseModel):
     name: str = Field(..., description="Repository name, e.g. derived from the path or the git remote")
     path: str = Field(..., description="Local path or URL the repository was scanned from")
@@ -36,6 +56,14 @@ class ScanMetadata(BaseModel):
     timestamp: datetime = Field(..., description="When the scan was run (UTC)")
     mode: ScanMode = Field(..., description="Scan mode requested via the CLI")
     duration_seconds: Optional[float] = Field(None, ge=0, description="Total scan duration, once known")
+    scanner_tier: ScannerTier = Field(
+        ScannerTier.CORE,
+        description=(
+            "Which scanner set produced this result. Defaults to CORE so a report written "
+            "before the extended tier existed still loads, and so a finding count can always "
+            "be read against the scanner set that produced it."
+        ),
+    )
 
 
 class ScanResult(BaseModel):

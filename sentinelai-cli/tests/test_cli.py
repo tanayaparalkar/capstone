@@ -24,7 +24,7 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from sentinelai.contracts import ScanMode
+from sentinelai.contracts import ScanMode, ScannerTier
 from sentinelai.core import ExitCode
 from sentinelai.main import app
 from sentinelai.providers import MockFindingsProvider
@@ -41,13 +41,13 @@ def _use_mock_provider(monkeypatch):
 
 
 def _spy_get_scan_result(monkeypatch):
-    """Wrap MockFindingsProvider.get_scan_result to record (repo_path, mode) calls."""
+    """Wrap MockFindingsProvider.get_scan_result to record (repo_path, mode, tier) calls."""
     calls = []
     original = MockFindingsProvider.get_scan_result
 
-    def wrapper(self, repo_path, mode=ScanMode.STANDARD):
-        calls.append((repo_path, mode))
-        return original(self, repo_path, mode=mode)
+    def wrapper(self, repo_path, mode=ScanMode.STANDARD, tier=ScannerTier.CORE):
+        calls.append((repo_path, mode, tier))
+        return original(self, repo_path, mode=mode, tier=tier)
 
     monkeypatch.setattr(MockFindingsProvider, "get_scan_result", wrapper)
     return calls
@@ -597,7 +597,7 @@ def test_scan_still_calls_the_provider_exactly_once(monkeypatch):
 def _break_provider(monkeypatch, message: str = "simulated backend outage"):
     """Make MockFindingsProvider.get_scan_result raise, without touching production code."""
 
-    def boom(self, repo_path, mode=ScanMode.STANDARD):
+    def boom(self, repo_path, mode=ScanMode.STANDARD, tier=ScannerTier.CORE):
         raise RuntimeError(message)
 
     monkeypatch.setattr(MockFindingsProvider, "get_scan_result", boom)

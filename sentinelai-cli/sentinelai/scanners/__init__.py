@@ -4,8 +4,10 @@ from .base import Scanner
 from .exceptions import ConfigurationError, ScannerError, ScannerExecutionError
 from .gitleaks import GitleaksScanner
 from .orchestrator import ScannerOrchestrator
+from .osv import OSVScanner
 from .registry import ScannerRegistration, ScannerRegistry
 from .semgrep import SemgrepScanner
+from .trivy import TrivyScanner
 
 __all__ = [
     "Scanner",
@@ -18,4 +20,6 @@ __all__ = [
     "SemgrepScanner",
     "BanditScanner",
     "GitleaksScanner",
+    "TrivyScanner",
+    "OSVScanner",
 ]

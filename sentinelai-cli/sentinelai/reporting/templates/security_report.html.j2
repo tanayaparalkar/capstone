@@ -119,6 +119,7 @@
     <div class="meta">
       <span><strong>Repository:</strong> {{ repository.name }}</span>
       <span><strong>Mode:</strong> {{ stats.scan_mode }}</span>
+      <span><strong>Scanners:</strong> {{ scanner_tier }}</span>
       <span><strong>Timestamp:</strong> {{ stats.timestamp.isoformat() }}</span>
     </div>
   </div>
@@ -161,6 +162,7 @@
       <dt>Repository Name</dt><dd>{{ repository.name }}</dd>
       <dt>Repository Path</dt><dd>{{ repository.path }}</dd>
       <dt>Scan Mode</dt><dd>{{ stats.scan_mode }}</dd>
+      <dt>Scanner Tier</dt><dd>{{ scanner_tier }}</dd>
       <dt>Timestamp</dt><dd>{{ stats.timestamp.isoformat() }}</dd>
       <dt>Duration</dt>
       <dd>{% if stats.duration_seconds is not none %}{{ "%.2fs"|format(stats.duration_seconds) }}{% else %}unavailable{% endif %}</dd>

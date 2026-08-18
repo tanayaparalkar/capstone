@@ -2,7 +2,7 @@
 from .ai_finding import AIEnrichedFinding, ConfidenceLabel, GroundingVerdict, VerificationStatus
 from .common import Severity
 from .correlated_finding import CorrelatedFinding, CorrelationRule
-from .scan_result import RepositoryInfo, ScanMetadata, ScanMode, ScanResult
+from .scan_result import RepositoryInfo, ScanMetadata, ScanMode, ScannerTier, ScanResult
 from .scanner_finding import ScannerFinding
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "RepositoryInfo",
     "ScanMetadata",
     "ScanMode",
+    "ScannerTier",
     "ScanResult",
     "ScannerFinding",
 ]

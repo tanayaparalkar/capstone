@@ -12,7 +12,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from sentinelai.contracts import RepositoryInfo, ScanMetadata, ScanMode, ScanResult, ScannerFinding
+from sentinelai.contracts import (
+    RepositoryInfo,
+    ScanMetadata,
+    ScanMode,
+    ScannerFinding,
+    ScannerTier,
+    ScanResult,
+)
 from sentinelai.correlation import correlate_findings
 
 from .base import FindingsProvider
@@ -26,7 +33,16 @@ class MockFindingsProvider(FindingsProvider):
     def __init__(self, data_path: Optional[Path] = None) -> None:
         self._data_path = data_path or DEFAULT_MOCK_DATA_PATH
 
-    def get_scan_result(self, repo_path: str, mode: ScanMode = ScanMode.STANDARD) -> ScanResult:
+    def get_scan_result(
+        self,
+        repo_path: str,
+        mode: ScanMode = ScanMode.STANDARD,
+        tier: ScannerTier = ScannerTier.CORE,
+    ) -> ScanResult:
+        # `tier` is accepted to satisfy the FindingsProvider signature and
+        # deliberately ignored: this provider runs no scanners, so there is no
+        # scanner set for it to select. It is still recorded in the metadata
+        # below so a mock report states which tier was asked for.
         raw = json.loads(self._data_path.read_text(encoding="utf-8"))
         scanner_findings = [ScannerFinding(**item) for item in raw]
         repo_path_obj = Path(repo_path)
@@ -39,6 +55,7 @@ class MockFindingsProvider(FindingsProvider):
             metadata=ScanMetadata(
                 timestamp=datetime.now(timezone.utc),
                 mode=mode,
+                scanner_tier=tier,
             ),
             scanner_findings=scanner_findings,
             ai_findings=[],

@@ -10,17 +10,21 @@ result. No AI, reporting, statistics, CLI, or prompt-generation logic -
 none of that is reachable from here, matching every other module in
 backend/ and scanners/.
 
-Scanner selection by mode is a real decision, not a placeholder: today
-every mode (QUICK/STANDARD/FULL) runs every registered scanner. There are
-only three general-purpose scanners (Semgrep, Bandit, GitLeaks) and no
-benchmark or product-specified criteria yet for excluding any of them
-from a faster tier - inventing one (e.g. guessing GitLeaks is "quick")
-would be exactly the kind of per-tool heuristic this project has
-consistently avoided elsewhere (see e.g. gitleaks.py's severity mapping).
-_select_scanners() is the seam for this once real criteria exist (heavier
-tools like Trivy/OSV added as FULL-only, or timing data justifying a
-QUICK subset) - it already takes `mode`, so extending it later doesn't
-require restructuring get_scan_result().
+Scanner selection is by *tier*, not by mode. ScannerTier.CORE (the
+default) runs the three code scanners - Semgrep, Bandit, GitLeaks - which
+is exactly what every scan ran before the tier existed; EXTENDED adds the
+two dependency scanners, Trivy and OSV-Scanner. Selection is a single
+filtered lookup against the registry, with no per-tool heuristics.
+
+Mode still selects nothing, for the reason it never did: QUICK/STANDARD/
+FULL are a depth control, and there is still no benchmark or
+product-specified criterion for calling one of the three code scanners
+"quick" - inventing one would be exactly the kind of per-tool guess this
+project has consistently avoided (see e.g. gitleaks.py's severity
+mapping). Folding dependency scanning into FULL instead of giving it its
+own axis was considered and rejected: it would silently change what an
+existing `--full` scan means. _select_scanners() takes both parameters,
+so mode remains available as the seam for a genuine depth decision later.
 
 The scanner registry is constructed once per LiveFindingsProvider
 instance by default (the three real wrappers, matching how
@@ -66,15 +70,23 @@ from typing import List, Optional
 
 from sentinelai.backend.context_builder import build_repository_context
 from sentinelai.backend.loader import load_repository
-from sentinelai.contracts import RepositoryInfo, ScanMetadata, ScanMode, ScanResult
+from sentinelai.contracts import (
+    RepositoryInfo,
+    ScanMetadata,
+    ScanMode,
+    ScannerTier,
+    ScanResult,
+)
 from sentinelai.core.errors import ProviderError
 from sentinelai.correlation import correlate_findings
 from sentinelai.scanners.bandit import BanditScanner
 from sentinelai.scanners.base import Scanner
 from sentinelai.scanners.gitleaks import GitleaksScanner
 from sentinelai.scanners.orchestrator import ScannerOrchestrator
+from sentinelai.scanners.osv import OSVScanner
 from sentinelai.scanners.registry import ScannerRegistry
 from sentinelai.scanners.semgrep import SemgrepScanner
+from sentinelai.scanners.trivy import TrivyScanner
 
 from .base import FindingsProvider
 
@@ -85,10 +97,25 @@ logger = logging.getLogger("sentinelai")
 
 
 def _default_registry() -> ScannerRegistry:
+    """Every scanner this project ships, each tagged with the tier it belongs to.
+
+    Registering all five here rather than building a different registry per
+    tier keeps registration in one place and makes the tier the only thing
+    that decides what runs - so "which scanners exist" and "which scanners run
+    by default" stay separate questions with separate answers.
+
+    Trivy and OSV-Scanner are EXTENDED, not CORE. They scan declared
+    dependencies rather than source code, they need a vulnerability database
+    (Trivy) or network access to osv.dev (OSV) that the core three do not, and
+    the project's frozen performance baseline is measured against the core
+    three alone. Making them opt-in is what keeps that baseline meaningful.
+    """
     registry = ScannerRegistry()
-    registry.register("semgrep", SemgrepScanner())
-    registry.register("bandit", BanditScanner())
-    registry.register("gitleaks", GitleaksScanner())
+    registry.register("semgrep", SemgrepScanner(), ScannerTier.CORE)
+    registry.register("bandit", BanditScanner(), ScannerTier.CORE)
+    registry.register("gitleaks", GitleaksScanner(), ScannerTier.CORE)
+    registry.register("trivy", TrivyScanner(), ScannerTier.EXTENDED)
+    registry.register("osv-scanner", OSVScanner(), ScannerTier.EXTENDED)
     return registry
 
 
@@ -99,12 +126,19 @@ class LiveFindingsProvider(FindingsProvider):
         self._registry = registry or _default_registry()
         self._orchestrator = ScannerOrchestrator()
 
-    def get_scan_result(self, repo_path: str, mode: ScanMode = ScanMode.STANDARD) -> ScanResult:
-        logger.info("LiveFindingsProvider: scanning '%s' mode=%s", repo_path, mode.value)
+    def get_scan_result(
+        self,
+        repo_path: str,
+        mode: ScanMode = ScanMode.STANDARD,
+        tier: ScannerTier = ScannerTier.CORE,
+    ) -> ScanResult:
+        logger.info(
+            "LiveFindingsProvider: scanning '%s' mode=%s tier=%s", repo_path, mode.value, tier.value
+        )
         try:
             repository = load_repository(repo_path)
             context = build_repository_context(repository)
-            scanners = self._select_scanners(mode)
+            scanners = self._select_scanners(mode, tier)
             scanner_findings = self._orchestrator.run(context, scanners)
             logger.info(
                 "LiveFindingsProvider: '%s' produced %d scanner findings", repo_path, len(scanner_findings)
@@ -118,7 +152,9 @@ class LiveFindingsProvider(FindingsProvider):
                     branch=context.git_metadata.branch,
                     languages=[language.name for language in context.languages],
                 ),
-                metadata=ScanMetadata(timestamp=datetime.now(timezone.utc), mode=mode),
+                metadata=ScanMetadata(
+                    timestamp=datetime.now(timezone.utc), mode=mode, scanner_tier=tier
+                ),
                 scanner_findings=scanner_findings,
                 ai_findings=[],
                 # Deterministic and offline, so it runs in scanner-only mode too -
@@ -129,6 +165,16 @@ class LiveFindingsProvider(FindingsProvider):
             logger.error("LiveFindingsProvider: scan of '%s' failed: %s", repo_path, exc)
             raise ProviderError(f"Live scan of '{repo_path}' failed: {exc}") from exc
 
-    def _select_scanners(self, mode: ScanMode) -> List[Scanner]:
-        """Return the scanners to run for `mode` - see module docstring for why every mode is identical today."""
-        return [registration.scanner for registration in self._registry.list_scanners()]
+    def _select_scanners(self, mode: ScanMode, tier: ScannerTier = ScannerTier.CORE) -> List[Scanner]:
+        """Return the scanners to run for `mode` and `tier`.
+
+        `tier` is what actually selects today; `mode` still selects nothing,
+        for the reason the module docstring gives. The two are kept as separate
+        parameters rather than collapsed because they answer different
+        questions - see ScannerTier's own docstring.
+
+        Ordering comes from ScannerRegistry.list_scanners(), which sorts by
+        name, so the orchestrator receives a deterministic sequence exactly as
+        it did before.
+        """
+        return [registration.scanner for registration in self._registry.list_scanners(tier)]

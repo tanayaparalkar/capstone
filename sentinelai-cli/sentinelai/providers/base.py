@@ -10,13 +10,24 @@ boundary needs to change.
 """
 from abc import ABC, abstractmethod
 
-from sentinelai.contracts import ScanMode, ScanResult
+from sentinelai.contracts import ScanMode, ScannerTier, ScanResult
 
 
 class FindingsProvider(ABC):
     """Source of a ScanResult for a given repository."""
 
     @abstractmethod
-    def get_scan_result(self, repo_path: str, mode: ScanMode = ScanMode.STANDARD) -> ScanResult:
-        """Return a fully-populated ScanResult for the given repository path."""
+    def get_scan_result(
+        self,
+        repo_path: str,
+        mode: ScanMode = ScanMode.STANDARD,
+        tier: ScannerTier = ScannerTier.CORE,
+    ) -> ScanResult:
+        """Return a fully-populated ScanResult for the given repository path.
+
+        `tier` selects which scanner set to run and defaults to CORE, so an
+        existing two-argument call produces exactly the result it always has.
+        A provider that has no scanners (MockFindingsProvider) accepts it and
+        ignores it rather than raising, keeping one signature at this boundary.
+        """
         raise NotImplementedError

@@ -54,6 +54,7 @@ def _executive_summary(result: ScanResult, stats: ScanStatistics) -> str:
         "",
         f"- **Repository:** {result.repository.name}",
         f"- **Scan Mode:** {stats.scan_mode}",
+        f"- **Scanner Tier:** {result.metadata.scanner_tier.value}",
         f"- **Scan Timestamp:** {_iso(stats.timestamp)}",
         f"- **Scan Duration:** {_duration(stats.duration_seconds)}",
         f"- **Total Findings:** {stats.total_findings}",
@@ -88,6 +89,7 @@ def _scan_information(result: ScanResult, stats: ScanStatistics) -> str:
         f"- **Repository Name:** {repo.name}",
         f"- **Repository Path:** {repo.path}",
         f"- **Scan Mode:** {stats.scan_mode}",
+        f"- **Scanner Tier:** {result.metadata.scanner_tier.value}",
         f"- **Timestamp:** {_iso(stats.timestamp)}",
         f"- **Duration:** {_duration(stats.duration_seconds)}",
     ]

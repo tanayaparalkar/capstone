@@ -57,7 +57,7 @@ from .ai.repository_context import from_backend_context
 from .ai.verifier import verify_finding
 from .backend.context_builder import build_repository_context
 from .backend.loader import load_repository
-from .contracts import ScanMode, ScanResult, Severity
+from .contracts import ScanMode, ScannerTier, ScanResult, Severity
 from .core import ExitCode, exceeds_fail_on_threshold, filter_by_severity
 from .presentation import (
     ScanProgress,
@@ -164,6 +164,14 @@ def scan(
     ),
     quick: bool = typer.Option(False, "--quick", help="Run a quick scan (subset of checks)"),
     full: bool = typer.Option(False, "--full", help="Run a full scan (all checks)"),
+    extended: bool = typer.Option(
+        False,
+        "--extended",
+        help="Also run the dependency scanners (Trivy, OSV-Scanner) alongside Semgrep, Bandit, "
+        "and GitLeaks. Off by default: the extended set needs Trivy's vulnerability database "
+        "and network access to osv.dev, and reports dependency advisories that the default "
+        "code-scanner set does not.",
+    ),
     severity: Optional[str] = typer.Option(
         None,
         "--severity",
@@ -244,6 +252,9 @@ def scan(
     if quick and full:
         _fail("--quick and --full cannot be used together.", ExitCode.INVALID_INPUT)
     mode = ScanMode.QUICK if quick else ScanMode.FULL if full else ScanMode.STANDARD
+    # Orthogonal to mode on purpose - --full does not imply --extended, so no
+    # existing invocation silently acquires dependency scanning.
+    tier = ScannerTier.EXTENDED if extended else ScannerTier.CORE
 
     format = format.lower()
     if format not in VALID_FORMATS:
@@ -274,20 +285,26 @@ def scan(
         render_scan_header(
             console,
             repository=str(repo_path.resolve()),
-            mode=mode.value,
+            mode=f"{mode.value} ({tier.value} scanners)",
             version=__version__,
             started_at=datetime.now(timezone.utc),
         )
 
     provider = _get_provider()
-    logger.info("scan started: path=%s mode=%s provider=%s", repo_path, mode.value, provider.__class__.__name__)
+    logger.info(
+        "scan started: path=%s mode=%s tier=%s provider=%s",
+        repo_path,
+        mode.value,
+        tier.value,
+        provider.__class__.__name__,
+    )
     started = time.monotonic()
     try:
         if format == "terminal":
             with ScanProgress(console).stage(f"Retrieving scan results ({provider.__class__.__name__})"):
-                result = provider.get_scan_result(str(repo_path), mode=mode)
+                result = provider.get_scan_result(str(repo_path), mode=mode, tier=tier)
         else:
-            result = provider.get_scan_result(str(repo_path), mode=mode)
+            result = provider.get_scan_result(str(repo_path), mode=mode, tier=tier)
     except Exception as exc:
         # The provider failed - a tool/integration problem, not a
         # security finding and not necessarily a SentinelAI bug.
