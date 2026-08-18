@@ -24,9 +24,9 @@ sentinelai-manual-test/
 │                         Arbitrary code execution (eval)
 ├── config/
 │   └── settings.py       Hardcoded credentials (API key, password)
-└── requirements.txt      Pinned dependencies (not scanned for CVEs today -
-                           SentinelAI has no dependency-vulnerability
-                           scanner wired up; see main project README)
+└── requirements.txt      Pinned dependencies with known CVEs (scanned by
+                           Trivy and OSV-Scanner in the opt-in extended tier:
+                           `--extended`; see main project README)
 ```
 
 5 files that SentinelAI scans (4 Python source files, 57 LOC, plus one
@@ -50,8 +50,9 @@ Semgrep's Python-only rules never touch it.
 | Hardcoded password (`settings.py:15`) | ✅ B105 | — | — |
 
 **17 raw findings total** (10 Bandit + 6 Semgrep + 1 GitLeaks). SentinelAI
-does not deduplicate across scanners, so this is also the exact count
-`sentinelai scan` reports. Note the two credentials in `settings.py` are
+does not deduplicate across scanners, so this is also the exact count a
+default core-tier `sentinelai scan` reports.
+Note the two credentials in `settings.py` are
 each caught by a *different* scanner and missed by the others — a small,
 honest illustration of why running three scanners finds more than
 running any one of them.
@@ -93,11 +94,16 @@ python3 -c "import json; d=json.load(open('/tmp/bench-result.json')); print(len(
 # Human-readable terminal view
 sentinelai scan sentinelai-manual-test
 
-# Optional: AI-enriched (requires Ollama + two models - see sentinelai-cli/README.md)
+# Extended tier: adds Trivy and OSV-Scanner dependency scanning
+sentinelai scan sentinelai-manual-test --extended --format json --output /tmp/bench-extended.json
+
+# Optional: AI-enriched (requires a running Ollama with both models pulled -
+# see sentinelai-cli/README.md). --ai requires enrichment and fails fast if
+# either variable is unset; --no-ai forces a scanner-only run.
 export SENTINELAI_AI_LLM_MODEL=llama3.1:8b
 export SENTINELAI_AI_EMBEDDING_MODEL=nomic-embed-text
-sentinelai scan sentinelai-manual-test --format json --output /tmp/bench-result-ai.json
+sentinelai scan sentinelai-manual-test --ai --format json --output /tmp/bench-result-ai.json
 ```
 
-`sentinelai-cli/tests/test_performance_basic.py` runs a version of the
-first command automatically as a regression guard.
+`sentinelai-cli/tests/test_performance_basic.py` runs versions of the
+scanner-only and extended commands automatically as regression guards.
