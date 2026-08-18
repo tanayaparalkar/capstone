@@ -10,6 +10,15 @@ Two independent measurements are reported and must not be conflated: a
 **scanner-only n=5** result (§5.1) and an **AI-enriched n=3** result (§5.2.1).
 They describe different modes with different cost profiles.
 
+**Scope of the AI-enrichment figures.** The §5.2–§5.4 results describe the
+pipeline as it stood on the measurement date, which issued one generation call
+per raw finding. SentinelAI subsequently moved to a multi-agent workflow that
+enriches once per correlated issue using three generation calls each, so
+present-day enrichment counts, verification/rejection totals, and latency are
+not comparable to the figures below. The §5.2–§5.4 measurements are preserved
+exactly as measured and have not been restated or remeasured; see
+`sentinelai-cli/README.md` for current runtime guidance.
+
 ---
 
 ## 5.1 Scanner-only performance (n=5)
