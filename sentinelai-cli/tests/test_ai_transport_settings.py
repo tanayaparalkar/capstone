@@ -207,6 +207,110 @@ def test_read_with_retry_keeps_its_three_argument_form():
     assert urlopen.call_count == MAX_ATTEMPTS
 
 
+# --- read_with_retry validates max_attempts itself -------------------------------------------------------------------------
+#
+# The transport used to clamp with max(1, int(max_attempts)), which turned every
+# invalid value into a working call: 0 and -1 became one attempt, 2.9 became 2,
+# and True - an int subclass - became 1. The clients already reject values below
+# 1, so this is the second line of defence rather than the first; what it adds is
+# catching the wrong *type*, which a range check cannot.
+
+
+@pytest.mark.parametrize("attempts", [1, 2, 3])
+def test_valid_attempt_counts_are_accepted(attempts):
+    with patch("urllib.request.urlopen", return_value=_FakeResponse(_EMBED_BODY)) as urlopen:
+        read_with_retry(_request(), 120, HOST, attempts)
+
+    assert urlopen.call_count == 1  # a success never needs a second attempt
+
+
+def test_one_attempt_never_retries():
+    refused = urllib.error.URLError("refused")
+
+    with patch("urllib.request.urlopen", side_effect=[refused]) as urlopen, patch("time.sleep") as sleep:
+        with pytest.raises(urllib.error.URLError):
+            read_with_retry(_request(), 120, HOST, 1)
+
+    assert urlopen.call_count == 1
+    sleep.assert_not_called()
+
+
+def test_two_attempts_preserves_the_default_behaviour():
+    """Explicitly passing the default must equal not passing it at all."""
+    refused = urllib.error.URLError("refused")
+
+    with patch("urllib.request.urlopen", side_effect=[refused] * 2) as urlopen, patch("time.sleep") as sleep:
+        with pytest.raises(urllib.error.URLError):
+            read_with_retry(_request(), 120, HOST, 2)
+
+    assert urlopen.call_count == 2
+    assert sleep.call_count == 1
+
+
+@pytest.mark.parametrize("attempts", [0, -1, -99])
+def test_attempt_counts_below_one_raise_value_error(attempts):
+    """Previously clamped to 1 and silently succeeded."""
+    with patch("urllib.request.urlopen") as urlopen:
+        with pytest.raises(ValueError, match="at least 1"):
+            read_with_retry(_request(), 120, HOST, attempts)
+
+    urlopen.assert_not_called()  # rejected before any network call
+
+
+@pytest.mark.parametrize(
+    "attempts",
+    [2.5, 2.0, "2", None, [2], True, False],
+    ids=["float", "whole-float", "str", "none", "list", "true", "false"],
+)
+def test_non_integer_attempt_counts_raise_type_error(attempts):
+    """Integer-only contract, and bool is deliberately included.
+
+    isinstance(True, int) is True in Python, so a plain int check would accept
+    True and silently mean "one attempt" - exactly the kind of coercion this
+    validation exists to stop. `2.0` is rejected too: it is unambiguous to a
+    human but accepting it would reintroduce int() coercion by the back door.
+    """
+    with patch("urllib.request.urlopen") as urlopen:
+        with pytest.raises(TypeError, match="must be an int"):
+            read_with_retry(_request(), 120, HOST, attempts)
+
+    urlopen.assert_not_called()
+
+
+def test_the_error_names_the_offending_type_and_value():
+    with pytest.raises(TypeError) as excinfo:
+        read_with_retry(_request(), 120, HOST, "2")
+
+    assert "str" in str(excinfo.value)
+    assert "'2'" in str(excinfo.value)
+
+
+def test_validation_does_not_change_the_default_call():
+    """The three-argument form still uses MAX_ATTEMPTS and still works."""
+    with patch("urllib.request.urlopen", return_value=_FakeResponse(_EMBED_BODY)) as urlopen:
+        body = read_with_retry(_request(), 120, HOST)
+
+    assert json.loads(body.decode())["embeddings"] == [[0.1, 0.2]]
+    assert urlopen.call_count == 1
+
+
+def test_retry_classification_is_unaffected_by_validation():
+    """404 still not retried, 500 still retried, at an explicit attempt count."""
+    not_found = urllib.error.HTTPError(f"{HOST}/api/embed", 404, "Not Found", {}, None)
+    server_error = urllib.error.HTTPError(f"{HOST}/api/embed", 500, "Server Error", {}, None)
+
+    with patch("urllib.request.urlopen", side_effect=[not_found] * 3) as urlopen, patch("time.sleep"):
+        with pytest.raises(urllib.error.HTTPError):
+            read_with_retry(_request(), 120, HOST, 3)
+    assert urlopen.call_count == 1
+
+    with patch(
+        "urllib.request.urlopen", side_effect=[server_error, _FakeResponse(_EMBED_BODY)]
+    ) as urlopen, patch("time.sleep"):
+        read_with_retry(_request(), 120, HOST, 3)
+    assert urlopen.call_count == 2
+
+
 # --- the factory is the only place that reads configuration ------------------------------------------------------------
 
 

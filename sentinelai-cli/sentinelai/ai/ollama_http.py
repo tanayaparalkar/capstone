@@ -107,24 +107,46 @@ def read_with_retry(
     classification encodes which failures a retry can actually fix (see above)
     rather than a preference.
 
+    The contract for `max_attempts` is integer-only and validated here, raising
+    TypeError for a non-int and ValueError for an int below 1. An earlier
+    version silently clamped with `max(1, int(max_attempts))`, which turned
+    every invalid value into a working call: 0 and -1 quietly became one
+    attempt, 2.9 became 2, and True - an int subclass in Python - became 1. All
+    four are programmer errors, and a transport that repairs them hides the bug
+    at the exact layer that should surface it. The clients
+    (ai/llm_ollama.py's OllamaProvider, ai/embeddings_ollama.py's
+    make_ollama_embed_fn) already reject values below 1, so this validation is
+    the second line rather than the first; it additionally catches the wrong
+    *type*, which those range checks do not. No valid call changes: the live
+    path is AISettings.max_attempts, an int constrained to >= 1, so pydantic
+    has already normalised anything configurable long before it arrives here.
+
     `host` is used only for the retry log line. Nothing about the request or
     response - prompt text, generated content, embedding vectors, evidence
     snippets - is ever logged; only the exception's own message, which carries
     the transport failure reason and no payload.
     """
-    attempts = max(1, int(max_attempts))
-    for attempt in range(1, attempts + 1):
+    # bool is checked first and separately: isinstance(True, int) is True, so a
+    # plain int check would accept it and silently mean "1 attempt".
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
+        raise TypeError(
+            f"max_attempts must be an int, got {type(max_attempts).__name__}: {max_attempts!r}"
+        )
+    if max_attempts < 1:
+        raise ValueError(f"max_attempts must be at least 1, got {max_attempts}")
+
+    for attempt in range(1, max_attempts + 1):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
         except Exception as exc:
-            if attempt >= attempts or not _is_retryable(exc):
+            if attempt >= max_attempts or not _is_retryable(exc):
                 raise
             logger.warning(
                 "Ollama request to %s failed (attempt %d of %d): %s; retrying in %.0fs",
                 host,
                 attempt,
-                attempts,
+                max_attempts,
                 exc,
                 RETRY_BACKOFF_SECONDS,
             )
