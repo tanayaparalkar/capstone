@@ -26,7 +26,7 @@ FROM python:3.12-slim-bookworm
 # Pinned, never "latest" - these are the exact versions this project's CI
 # uses and that the Trivy/OSV wrappers' documented JSON shapes and
 # exit-code behavior were verified against. Bump deliberately.
-ARG GITLEAKS_VERSION=8.24.3
+ARG GITLEAKS_VERSION=8.30.1
 ARG TRIVY_VERSION=0.74.0
 ARG OSV_SCANNER_VERSION=2.5.1
 

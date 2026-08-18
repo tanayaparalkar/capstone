@@ -103,7 +103,7 @@ to the run command.
 |---|---|---|
 | Semgrep | 1.172.0 | PyPI |
 | Bandit | 1.9.4 | PyPI |
-| GitLeaks | 8.24.3 | GitHub release |
+| GitLeaks | 8.30.1 | GitHub release |
 | Trivy | 0.74.0 | GitHub release |
 | OSV-Scanner | 2.5.1 | GitHub release |
 
