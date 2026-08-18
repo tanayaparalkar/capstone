@@ -1,0 +1,113 @@
+# Build-context exclusions for the SentinelAI image.
+#
+# Two jobs. First, keep the context small and the build cache stable - a
+# large .git directory or a local .venv would be shipped to the daemon on
+# every build and would invalidate the COPY layer on every commit.
+#
+# Second, and more importantly: nothing here should ever reach an image
+# that may be published. Environment files, model data, and generated
+# scan reports can all carry credentials or a detailed map of a private
+# codebase. The Dockerfile copies only sentinelai-cli/, but these rules
+# are what keep that safe even if the COPY is ever widened.
+#
+# Pattern note: .dockerignore patterns are anchored to the context root
+# and do NOT recurse on their own - a bare `__pycache__/` would exclude
+# only /__pycache__, leaving sentinelai-cli/sentinelai/__pycache__/ in
+# the context. Anything that can appear at any depth is therefore written
+# with a `**/` prefix.
+#
+# Mirrors .gitignore's intent but is deliberately a separate file: git and
+# Docker exclude for different reasons, and a file can be legitimately
+# committed yet still have no business inside an image (tests, docs, the
+# deliberately-vulnerable benchmark fixture).
+
+# --- Version control -------------------------------------------------------
+.git
+.gitignore
+.gitattributes
+.github
+
+# --- Python caches and build artifacts -------------------------------------
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/*.so
+**/build/
+**/dist/
+**/*.egg-info/
+**/*.egg
+**/.eggs/
+**/wheels/
+
+# --- Virtual environments --------------------------------------------------
+**/.venv/
+**/venv/
+**/ENV/
+**/env/
+**/.tox/
+**/.nox/
+
+# --- Test and tooling caches ----------------------------------------------
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.hypothesis/
+**/.coverage
+**/.coverage.*
+**/htmlcov/
+
+# --- Environment files and secrets ----------------------------------------
+# Never build a credential into an image.
+**/.env
+**/.env.*
+**/*.env
+**/.envrc
+**/secrets/
+**/*.pem
+**/*.key
+**/credentials.json
+
+# --- Local model data ------------------------------------------------------
+# No model weights are bundled: AI enrichment reaches a separately
+# configured Ollama host. These rules keep a local download from being
+# swept into the context by accident.
+**/.ollama/
+**/models/
+**/*.gguf
+**/*.safetensors
+**/*.pt
+**/*.onnx
+
+# --- Generated scan output and reports ------------------------------------
+# Reproducible by re-running the CLI; never source, and potentially a
+# detailed map of a private codebase.
+**/scan-result*.json
+**/sentinelai-cli-scan*.json
+**/ai-latency-run*.json
+**/sentinelai-report*.html
+**/sentinelai-report*.md
+**/sentinelai-results*.sarif
+**/*.sarif
+**/report.json
+**/report.md
+**/report.html
+**/sentinelai-output/
+
+# --- Editor and OS noise ---------------------------------------------------
+**/.DS_Store
+**/Thumbs.db
+**/.idea/
+**/.vscode/
+**/*.swp
+
+# --- Not needed at runtime -------------------------------------------------
+# The image runs the CLI. It does not run the test suite, render the
+# docs, or scan the deliberately-vulnerable benchmark fixture - shipping
+# that fixture into an image would plant known-vulnerable files and fake
+# credentials inside it.
+sentinelai-manual-test/
+sentinelai-cli/tests/
+sentinelai-cli/docs/
+*.md
+Dockerfile
+.dockerignore

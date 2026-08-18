@@ -33,6 +33,117 @@ extra pulls in `pytest` for running the test suite.
 If you'd rather not install it as a package, `pip install -r requirements.txt`
 and run it as `python -m sentinelai.main scan .` instead.
 
+## Run in Docker
+
+The `Dockerfile` at the repository root packages the CLI with all five
+scanners pinned, so a scan is reproducible without installing Semgrep,
+Bandit, GitLeaks, Trivy, or OSV-Scanner on the host.
+
+Docker here is **packaging only**. The CLI inside behaves exactly as it does
+on a host — same scanners, same core/extended tiers, same correlation rules,
+same report contracts. Nothing in the image listens on a port, and there is no
+server, database, or daemon.
+
+### Build
+
+```bash
+docker build -t sentinelai:local .
+```
+
+Build from the repository root (the `Dockerfile` needs `sentinelai-cli/` in
+its context). BuildKit supplies `TARGETARCH`, so the same command produces a
+working image on both x86-64 and Apple Silicon.
+
+### Core scan
+
+```bash
+mkdir -p sentinelai-output
+docker run --rm \
+  -v "$(pwd):/workspace:ro" \
+  -v "$(pwd)/sentinelai-output:/output" \
+  sentinelai:local \
+  scan /workspace --format json --output /output/scan-result.json
+```
+
+### Extended scan
+
+Adds Trivy and OSV-Scanner. Needs network access at runtime — Trivy downloads
+its vulnerability database on first use (~108 MB) and OSV-Scanner queries
+osv.dev:
+
+```bash
+mkdir -p sentinelai-output
+docker run --rm \
+  -v "$(pwd):/workspace:ro" \
+  -v "$(pwd)/sentinelai-output:/output" \
+  sentinelai:local \
+  scan /workspace --extended --format json --output /output/scan-result.json
+```
+
+Every other flag works unchanged — `--format markdown|html|sarif`,
+`--fail-on`, `--severity`. Exit codes are the same as on a host, so
+`--fail-on high` gates a pipeline from inside a container exactly as it does
+outside one.
+
+### Filesystem contract
+
+**The scanned repository is mounted read-only (`:ro`) and reports are written
+to a separate `/output` mount.** SentinelAI never writes into the repository
+it scans. `mkdir -p sentinelai-output` first: Docker creates a missing bind-mount
+directory as `root`, which the container's unprivileged user could not then
+write to.
+
+The container runs as a non-root user (`sentinelai`, uid 1000). If your host
+uid is not 1000, either `chmod 777 sentinelai-output` or add `--user "$(id -u):$(id -g)"`
+to the run command.
+
+### What is pinned, and how it is verified
+
+| Tool | Version | Source |
+|---|---|---|
+| Semgrep | 1.172.0 | PyPI |
+| Bandit | 1.9.4 | PyPI |
+| GitLeaks | 8.24.3 | GitHub release |
+| Trivy | 0.74.0 | GitHub release |
+| OSV-Scanner | 2.5.1 | GitHub release |
+
+All five are pinned as build `ARG`s — never `latest`. The three GitHub
+downloads are fetched to disk and checked with `sha256sum -c` against each
+project's own published checksum file before being installed; nothing is
+piped into a shell, and no digest is hardcoded in the `Dockerfile`.
+
+**Limitation, stated plainly:** those checksum files ship from the *same*
+GitHub release as the binaries they describe. Verification therefore proves the
+download arrived intact — catching truncation, corruption, and mirror
+problems — but it is **not an independent trust root** and cannot detect a
+compromised or re-tagged upstream release. Pinning digests directly would be
+stronger, at the cost of six per-architecture values needing a manual update on
+every version bump.
+
+### Git ownership
+
+The image sets `git config --global --add safe.directory '*'`. A bind-mounted
+host repository is owned by a uid that does not exist inside the container, and
+git refuses to operate on such a checkout — which would fail every scan of a
+git repository with `PROVIDER_ERROR`. This relaxes a protection aimed at a
+threat this container does not face: it is throwaway, unprivileged, and the
+mount is read-only.
+
+### AI enrichment is optional and not bundled
+
+**The standard, reproducible container path is scanner-only.** The image
+contains no model weights and runs no Ollama server, so AI enrichment does
+**not** work out of the box and no part of this section claims otherwise.
+
+If you want it, you must run Ollama yourself on the host, pull both models
+(see "AI Enrichment Configuration" below), and point the container at it —
+adding roughly `--add-host=host.docker.internal:host-gateway` plus
+`-e SENTINELAI_AI_LLM_MODEL`, `-e SENTINELAI_AI_EMBEDDING_MODEL`, and an
+Ollama host variable. That path is unsupported here, deliberately: it depends
+on your host networking and on models this image does not ship, which is
+exactly what makes it non-reproducible and therefore not the container's
+documented use.
+
 ## Two ways to run SentinelAI
 
 SentinelAI has one scan pipeline and two modes. They are suited to different

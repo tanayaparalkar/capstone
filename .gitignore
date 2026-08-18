@@ -19,6 +19,12 @@ report.json
 report.md
 report.html
 
+# Docker run output. sentinelai-cli/README.md's documented container
+# commands mount ./sentinelai-output as the writable /output target, so a
+# normal `docker run` leaves this directory behind in whatever repository
+# was scanned - including this one.
+sentinelai-output/
+
 # Python
 __pycache__/
 *.py[cod]
