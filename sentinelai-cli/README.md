@@ -22,7 +22,7 @@ Two commands, two distinct jobs:
 
 ```bash
 cd sentinelai-cli
-python -m venv .venv
+python3 -m venv .venv
 .venv/Scripts/pip install -e ".[dev]"   # macOS/Linux: .venv/bin/pip
 ```
 
@@ -31,7 +31,7 @@ code changes take effect immediately without reinstalling). The `[dev]`
 extra pulls in `pytest` for running the test suite.
 
 If you'd rather not install it as a package, `pip install -r requirements.txt`
-and run it as `python -m sentinelai.main scan .` instead.
+and run it as `python3 -m sentinelai.main scan .` instead.
 
 ## Run in Docker
 
