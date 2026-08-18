@@ -139,6 +139,30 @@ class AISettings(BaseModel):
             "reuses this field rather than a separate embedding_host."
         ),
     )
+    request_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "Per-attempt timeout, in seconds, for every Ollama HTTP request (both /api/generate and "
+            "/api/embed). Applies to each attempt independently rather than being divided across "
+            "retries. The default is the value both clients previously hardcoded, so leaving this "
+            "unset reproduces the prior behaviour exactly. Raise it for a slow machine or a large "
+            "model; the multi-agent pipeline issues three generation calls per correlated finding, "
+            "so a timeout that is too low fails a scan late rather than early."
+        ),
+    )
+    max_attempts: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Total attempts per Ollama request, including the first - so 1 disables retrying. Only "
+            "transient failures are ever retried (connection errors and HTTP 500/502/503/504); "
+            "deterministic ones such as 404 and 501 are not, and raising this value does not change "
+            "that classification. The default matches the value ai/ollama_http.py previously "
+            "hardcoded. Keep it low: ai/pipeline.py handles failures per finding, so the worst-case "
+            "added delay is this value multiplied across every finding in a scan."
+        ),
+    )
     llm_model: Optional[str] = Field(
         default=None,
         description=(

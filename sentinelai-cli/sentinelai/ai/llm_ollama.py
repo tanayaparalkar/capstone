@@ -56,22 +56,35 @@ conversation) is deliberately never read or threaded into a later
 call - using it would mean maintaining conversation history across
 calls, out of scope here.
 
-No exception handling: urllib.error.URLError/HTTPError (network/HTTP
-failures), json.JSONDecodeError (malformed response body), and KeyError
-(a response missing "response" - a genuine API contract violation) all
-propagate as themselves, matching the propagation policy already
-established in security_kb/loader.py, ai/agents/explainer.py, and
-ai/llm_base.py's own docstring.
+Exception policy: transport and protocol failures are translated into
+core.errors.AIEnrichmentError with a message naming the host, the model,
+the cause, and the fix - the same treatment ai/embeddings_ollama.py has
+always given the /api/embed endpoint, and deliberately the same wording
+patterns, so the two endpoints do not fail in two different voices.
+
+This replaced raw propagation, which was measured to be genuinely
+unhelpful: with SENTINELAI_AI_LLM_MODEL set to a model that was not
+pulled, every finding failed with "HTTP Error 404: Not Found" and the
+final error named neither the model nor the fix - while Ollama's own
+response body had said, in as many words, "model 'llama3.1' not found".
+See _error_detail below for why that sentence was being thrown away.
+
+The translation is confined to the failure path. A successful generation
+returns exactly what it returned before, byte for byte.
 
 The HTTP call goes through ai/ollama_http.py's read_with_retry(), which
 retries transient transport failures (connection refused, socket
-timeout, 500/502/503/504) exactly once after a fixed 2-second backoff.
-That helper re-raises the original exception once retries are exhausted,
-so the propagation policy above is unchanged - a caller still sees the
-same urllib exception it saw before, just possibly after one extra
-attempt. Parsing stays here, outside the retry, because a malformed
-response body is deterministic and a second attempt would fail
+timeout, 500/502/503/504) after a fixed 2-second backoff. That helper
+re-raises the original exception once retries are exhausted, and the
+translation above then converts it - so retrying is invisible to callers
+except in timing. Parsing stays here, outside the retry, because a
+malformed response body is deterministic and a second attempt would fail
 identically; see that module's docstring.
+
+Per-attempt timeout and attempt count are constructor parameters
+defaulting to the values this module used to hardcode. ai/factory.py
+supplies them from AISettings; nothing here reads configuration, so the
+dependency note below still holds.
 
 No HTTP-transport injection parameter on the constructor: that would
 itself be exactly the kind of extra abstraction beyond what
@@ -98,22 +111,33 @@ the analysis:\n```json...") is not matched and passes through
 unchanged, same as today - a different, non-anchored implementation
 would be needed for that shape if it's observed in practice.
 
-Imports .llm_base.LLMProvider (approved leaf) plus stdlib json, re, and
-urllib.request only - no contracts, no security_kb, no ai/config.py.
-No cycle possible.
+Imports .llm_base.LLMProvider and .ollama_http (approved leaves),
+core.errors.AIEnrichmentError (the project's existing error taxonomy,
+already imported the same way by ai/embeddings_ollama.py), plus stdlib
+json, re, and urllib only - no security_kb and, deliberately, no
+ai/config.py. No cycle possible.
 """
 import json
 import re
+import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional, Type
 
 from pydantic import BaseModel
 
+from sentinelai.core.errors import AIEnrichmentError
+
 from .llm_base import LLMProvider
-from .ollama_http import read_with_retry
+from .ollama_http import MAX_ATTEMPTS, read_with_retry
 
 _REQUEST_TIMEOUT_SECONDS = 120
 _TEMPERATURE = 0.0
+
+# Cap on how much of an error response body is read and quoted. Ollama's error
+# bodies are a single short JSON object; the limit exists so a server returning
+# something unexpected (an HTML error page, a truncated stream) cannot paste an
+# unbounded amount of text into a user-facing message.
+_MAX_ERROR_BODY_BYTES = 2048
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -124,16 +148,102 @@ def _strip_markdown_fences(text: str) -> str:
     return text
 
 
+def _error_detail(exc: urllib.error.HTTPError) -> Optional[str]:
+    """Ollama's own `error` string from a failed response body, if it can be read.
+
+    Ollama reports the actual cause in the *body* of a non-2xx response - e.g.
+    HTTP 404 carries {"error": "model 'llama3.1' not found"} - and urllib raises
+    HTTPError before any caller reads it, so that sentence was previously
+    discarded and the user saw only "HTTP Error 404: Not Found".
+
+    HTTPError is itself a readable file object, so the body is recoverable here.
+    Everything about reading it is best-effort: a body that is missing, already
+    consumed, over-long, not JSON, or not shaped as expected yields None and the
+    caller falls back to the status line. Surfacing a message must never be able
+    to raise a second exception on top of the first.
+
+    Only the `error` field is ever returned. The response body of a *successful*
+    generation carries model output, and nothing in this function is reachable
+    for one - this runs solely on the HTTPError path.
+    """
+    try:
+        raw = exc.read(_MAX_ERROR_BODY_BYTES)
+    except Exception:
+        return None
+    if not raw:
+        return None
+
+    try:
+        body = json.loads(raw.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+    detail = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(detail, str):
+        return None
+    detail = detail.strip()
+    return detail or None
+
+
+def _http_message(exc: urllib.error.HTTPError, host: str, model: str) -> str:
+    """Turn an Ollama generation failure into a message naming the model, the cause, and the fix.
+
+    Deliberately mirrors ai/embeddings_ollama.py's `_http_message`: the two
+    endpoints fail in the same ways for the same reasons, and a user who has
+    seen one message should recognise the other. The 404 text differs only
+    where the fix differs - a generation model is pulled by name, whereas the
+    embedding message additionally steers users toward a dedicated embedding
+    model.
+    """
+    detail = _error_detail(exc)
+
+    if exc.code == 404:
+        message = (
+            f"the Ollama server at {host} has no model named '{model}' (HTTP 404). "
+            f"Pull it with `ollama pull {model}`, or set SENTINELAI_AI_LLM_MODEL to a model "
+            "that is already installed (`ollama list` shows them)."
+        )
+    else:
+        message = (
+            f"the generation request to {host}/api/generate failed with HTTP {exc.code} "
+            f"({exc.reason}) for model '{model}'."
+        )
+
+    # Ollama's own wording is appended rather than substituted: the sentence above
+    # carries the fix, which the raw server string never does.
+    return f"{message} Ollama reported: {detail}" if detail else message
+
+
 class OllamaProvider(LLMProvider):
     """LLMProvider backed by a local Ollama server's /api/generate endpoint."""
 
-    def __init__(self, host: str, model: str) -> None:
+    def __init__(
+        self,
+        host: str,
+        model: str,
+        timeout: float = _REQUEST_TIMEOUT_SECONDS,
+        max_attempts: int = MAX_ATTEMPTS,
+    ) -> None:
+        """Transport tunables are injected, not read from ai/config.py here.
+
+        This module deliberately imports no configuration (see the module
+        docstring's dependency note); ai/factory.py is the composition root that
+        reads AISettings and passes the values down. Both parameters default to
+        the values this module previously hardcoded, so an existing
+        two-argument construction is byte-for-byte unchanged.
+        """
         if not host:
             raise ValueError("host must be a non-empty string")
         if not model:
             raise ValueError("model must be a non-empty string")
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         self._host = host
         self._model = model
+        self._timeout = timeout
+        self._max_attempts = max_attempts
 
     def generate(self, prompt: str, response_schema: Optional[Type[BaseModel]] = None) -> str:
         """Return the model's complete response text for `prompt`.
@@ -164,8 +274,38 @@ class OllamaProvider(LLMProvider):
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        raw_body = read_with_retry(request, _REQUEST_TIMEOUT_SECONDS, self._host)
-        body = json.loads(raw_body.decode("utf-8"))
+        # read_with_retry re-raises the original urllib exception once its retries
+        # are exhausted, so the retry policy is untouched by this translation - it
+        # still sees exactly the exceptions it saw before, just after the same
+        # number of attempts.
+        try:
+            raw_body = read_with_retry(request, self._timeout, self._host, self._max_attempts)
+        except urllib.error.HTTPError as exc:
+            # Must be caught before URLError/OSError: HTTPError subclasses both.
+            raise AIEnrichmentError(_http_message(exc, self._host, self._model)) from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise AIEnrichmentError(
+                f"could not reach the Ollama server at {self._host} for generation ({exc}). "
+                "Is it running? Start it with `ollama serve`, or set SENTINELAI_AI_LLM_HOST if it "
+                "listens somewhere other than the default."
+            ) from exc
 
-        response_text = body["response"]
+        # Parsing sits outside the retry deliberately: a malformed body is
+        # deterministic, so a second attempt would fail identically.
+        try:
+            body = json.loads(raw_body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise AIEnrichmentError(
+                f"the Ollama server at {self._host} returned a non-JSON response to a generation "
+                f"request ({exc})."
+            ) from exc
+
+        try:
+            response_text = body["response"]
+        except (KeyError, TypeError) as exc:
+            raise AIEnrichmentError(
+                f"the Ollama generation response from {self._host} contained no 'response' field "
+                f"(model '{self._model}')."
+            ) from exc
+
         return _strip_markdown_fences(response_text.strip())

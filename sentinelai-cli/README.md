@@ -302,10 +302,43 @@ export SENTINELAI_AI_LLM_MODEL=llama3.1:8b
 export SENTINELAI_AI_EMBEDDING_MODEL=nomic-embed-text
 
 # 4. Scan with AI enrichment
-sentinelai scan .
+sentinelai scan . --ai
 ```
 
-To go back to scanner-only mode, unset either variable:
+No API key is involved at any point. Ollama runs locally, and SentinelAI
+never contacts a cloud service — there is no credential to configure and none
+of these variables holds a secret.
+
+### Controlling AI enrichment: `--ai` and `--no-ai`
+
+| Invocation | Behaviour |
+|---|---|
+| `sentinelai scan .` | Enriches **only if** both model variables are set; otherwise scanner-only. Unchanged from before these flags existed. |
+| `sentinelai scan . --ai` | Enrichment is **required**. If either variable is unset, exits `INVALID_INPUT` (**2**) *before scanning*, naming the missing variable(s) and the setup commands. |
+| `sentinelai scan . --no-ai` | Skips enrichment **even when configured** — a fast, deterministic scanner-only run. |
+
+`--ai` and `--no-ai` cannot be combined.
+
+Use `--ai` in any script or pipeline where a scanner-only report would be
+mistaken for an AI-enriched one: without it, a mistyped variable name silently
+produces a report with an empty `ai_enriched` list and exit code 0. Use
+`--no-ai` when the two variables live in your shell profile but you want a
+quick scan without waiting on the model.
+
+### A note on model tags
+
+`llama3.1` is a **model family shorthand**, not a local model. Ollama resolves
+it to a default tag when pulling, but treats every tag as a distinct local
+name afterwards — so if you pulled `llama3.1:8b`, then
+`SENTINELAI_AI_LLM_MODEL=llama3.1` fails with HTTP 404 even though the weights
+are on disk.
+
+**Always use the exact tag you pulled.** `ollama list` shows what you have.
+Every runnable command in this README uses `llama3.1:8b` and
+`nomic-embed-text`, which is also the configuration the measurements in
+`../PAPER_RESULTS.md` were taken under.
+
+To go back to scanner-only mode, pass `--no-ai`, or unset either variable:
 
 ```bash
 unset SENTINELAI_AI_LLM_MODEL SENTINELAI_AI_EMBEDDING_MODEL
@@ -344,6 +377,22 @@ themselves are unset (see "When AI is not configured" below).
 | `SENTINELAI_AI_CONFIDENCE_MEDIUM_THRESHOLD` | `0.4` | Minimum confidence score (inclusive) mapped to `medium`; below this is `low`. |
 | `SENTINELAI_AI_ENABLE_VERIFICATION` | `true` | Whether the verification step runs before a finding is emitted. |
 | `SENTINELAI_AI_LOG_LEVEL` | `INFO` | Logging level for the AI layer. |
+| `SENTINELAI_AI_REQUEST_TIMEOUT_SECONDS` | `120` | Per-attempt timeout for every Ollama request (generation and embeddings). Applies to each attempt independently, not divided across retries. Raise it for a slow machine or a larger model. |
+| `SENTINELAI_AI_MAX_ATTEMPTS` | `2` | Total attempts per Ollama request, including the first — `1` disables retrying. |
+
+Only **transient** failures are ever retried — connection errors and HTTP
+500/502/503/504. Deterministic ones are not: a 404 for a model that was never
+pulled, or a 501 from an embedding model that cannot embed, will not resolve
+themselves between two attempts, so retrying them would only add delay before
+showing the same message. Raising `SENTINELAI_AI_MAX_ATTEMPTS` does not change
+that classification. The 2-second backoff between attempts is fixed and not
+configurable; keep the attempt count low, because the AI pipeline handles
+failures per finding, so the worst case is that delay multiplied across every
+finding in a scan.
+
+The defaults reproduce the behaviour these values previously had when they were
+hardcoded, so an unconfigured run is unchanged — including the latency figures
+in `../PAPER_RESULTS.md`, which were measured under them.
 
 `SENTINELAI_AI_LLM_PROVIDER` and `SENTINELAI_AI_EMBEDDING_PROVIDER` also
 exist (see `sentinelai/ai/config.py`) but are currently unused — they're
@@ -392,7 +441,9 @@ Ollama, a model, or any API key.
 | `AI enrichment failed: the embedding model 'llama3.1:8b' does not support embeddings (HTTP 501 …)` | `SENTINELAI_AI_EMBEDDING_MODEL` points at a text-generation model | `ollama pull nomic-embed-text` then `export SENTINELAI_AI_EMBEDDING_MODEL=nomic-embed-text` |
 | `AI enrichment failed: … has no model named 'x' (HTTP 404)` | The model isn't pulled | `ollama pull <model>` |
 | `AI enrichment failed: could not reach the Ollama server at http://localhost:11434 …` | Ollama isn't running, or listens elsewhere | `ollama serve`, or set `SENTINELAI_AI_LLM_HOST` |
-| `findings.ai_enriched` is empty and no error is shown | AI isn't configured — one of the two variables is unset | Set both (see [Quick start](#quick-start)) |
+| `AI enrichment failed: … has no model named 'llama3.1' (HTTP 404)` … `Ollama reported: model 'llama3.1' not found` | The tag doesn't match what you pulled — `llama3.1` is a family shorthand, not a local model | `ollama list`, then use the exact tag (e.g. `llama3.1:8b`) |
+| `findings.ai_enriched` is empty and no error is shown | AI isn't configured — one of the two variables is unset | Set both (see [Quick start](#quick-start)), or pass `--ai` to make this an error instead of a silent skip |
+| `--ai requires AI enrichment to be configured, but … is not set` (exit `2`) | `--ai` was passed without both variables set | Set the named variable(s), or drop `--ai` for a scanner-only scan |
 
 A failure that prevents AI enrichment entirely — an unreachable server, an
 unusable embedding model, or every finding failing — exits with code `3`

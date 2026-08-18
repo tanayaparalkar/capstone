@@ -105,7 +105,12 @@ from .retrieval import EmbeddingFn, InMemoryRetriever, Retriever
 
 def create_embedding_fn() -> EmbeddingFn:
     settings = get_settings()
-    return make_ollama_embed_fn(host=settings.llm_host, model=settings.embedding_model)
+    return make_ollama_embed_fn(
+        host=settings.llm_host,
+        model=settings.embedding_model,
+        timeout=settings.request_timeout_seconds,
+        max_attempts=settings.max_attempts,
+    )
 
 
 def create_retriever(entries: list[KnowledgeBaseEntry]) -> Retriever:
@@ -122,5 +127,10 @@ def create_default_retriever() -> Retriever:
 
 def create_llm_generate_fn() -> LLMFn:
     settings = get_settings()
-    provider = OllamaProvider(host=settings.llm_host, model=settings.llm_model)
+    provider = OllamaProvider(
+        host=settings.llm_host,
+        model=settings.llm_model,
+        timeout=settings.request_timeout_seconds,
+        max_attempts=settings.max_attempts,
+    )
     return provider.generate

@@ -77,14 +77,22 @@ The other branches (unreachable server, non-JSON body, missing
 depends on one exception rather than on urllib/json internals.
 
 Retries are handled by ai/ollama_http.py's read_with_retry(), which
-retries connection-level failures and transient 5xx statuses once, after
-a fixed 2-second backoff. HTTP 501 is explicitly excluded from that
-retry set: it is deterministic here - the model will not acquire
-embedding support on a second attempt - and it is the most common
-misconfiguration this file exists to explain, so retrying it would delay
-that explanation by the backoff for no benefit. A connection failure is
-retried once, since a server that was momentarily unreachable may answer
-the second attempt; if it does not, the same actionable message is
+retries connection-level failures and transient 5xx statuses up to the
+configured total attempt count, waiting a fixed 2 seconds between
+attempts. That count defaults to 2 total attempts and is overridable via
+SENTINELAI_AI_MAX_ATTEMPTS (passed in as `max_attempts` by
+ai/factory.py); the backoff itself stays fixed at 2 seconds and is not
+configurable.
+
+HTTP 501 is explicitly excluded from that retry set, and raising the
+attempt count does not add it back: it is deterministic here - the model
+will not acquire embedding support on a later attempt - and it is the
+most common misconfiguration this file exists to explain, so retrying it
+would delay that explanation by the backoff for no benefit. HTTP 404 is
+excluded on the same grounds, since a model that was never pulled will
+not appear between two attempts. A connection failure *is* retried,
+since a server that was momentarily unreachable may answer a later
+attempt; once the attempts are exhausted, the same actionable message is
 raised as before.
 
 Imports only stdlib json/urllib.request, plus EmbeddingFn from
@@ -105,7 +113,7 @@ import urllib.request
 
 from sentinelai.core.errors import AIEnrichmentError
 
-from .ollama_http import read_with_retry
+from .ollama_http import MAX_ATTEMPTS, read_with_retry
 from .retrieval import EmbeddingFn
 
 _REQUEST_TIMEOUT_SECONDS = 120
@@ -120,11 +128,27 @@ _DEDICATED_MODEL_HINT = (
 )
 
 
-def make_ollama_embed_fn(host: str, model: str) -> EmbeddingFn:
+def make_ollama_embed_fn(
+    host: str,
+    model: str,
+    timeout: float = _REQUEST_TIMEOUT_SECONDS,
+    max_attempts: int = MAX_ATTEMPTS,
+) -> EmbeddingFn:
+    """Transport tunables are injected by ai/factory.py from AISettings.
+
+    Both default to the values this module previously hardcoded, so an existing
+    two-argument call is byte-for-byte unchanged. Mirrors the same parameters on
+    ai/llm_ollama.py's OllamaProvider - one policy, applied identically to both
+    Ollama endpoints.
+    """
     if not host:
         raise ValueError("host must be a non-empty string")
     if not model:
         raise ValueError("model must be a non-empty string")
+    if timeout <= 0:
+        raise ValueError("timeout must be positive")
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
 
     def embed(texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -143,7 +167,7 @@ def make_ollama_embed_fn(host: str, model: str) -> EmbeddingFn:
         # still produces the same actionable message for, exactly the exceptions it
         # handled before.
         try:
-            raw_body = read_with_retry(request, _REQUEST_TIMEOUT_SECONDS, host)
+            raw_body = read_with_retry(request, timeout, host, max_attempts)
         except urllib.error.HTTPError as exc:
             # Must be caught before URLError/OSError: HTTPError subclasses both.
             raise AIEnrichmentError(_http_message(exc, host, model)) from exc

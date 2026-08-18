@@ -120,6 +120,39 @@ def _fail_from_exception(message: str, exc: Exception, code: ExitCode, debug: bo
     raise typer.Exit(code=code)
 
 
+def _require_ai_configuration() -> None:
+    """Exit with INVALID_INPUT unless both AI model variables are set.
+
+    INVALID_INPUT (2) rather than PROVIDER_ERROR (3): nothing has failed yet
+    and nothing external has been contacted - the command as invoked is simply
+    not satisfiable, which is the same category as `--quick --full` or an
+    unknown --format value. PROVIDER_ERROR stays reserved for a configured
+    dependency that actually failed, which is what the enrichment block below
+    still reports.
+
+    Names only the variables that are missing, so a user who has set one of the
+    two is not told to set both.
+    """
+    settings = get_settings()
+    missing = []
+    if settings.llm_model is None:
+        missing.append("SENTINELAI_AI_LLM_MODEL")
+    if settings.embedding_model is None:
+        missing.append("SENTINELAI_AI_EMBEDDING_MODEL")
+    if not missing:
+        return
+
+    _fail(
+        f"--ai requires AI enrichment to be configured, but {' and '.join(missing)} "
+        f"{'is' if len(missing) == 1 else 'are'} not set. "
+        "Start a local Ollama server (`ollama serve`), pull both models "
+        "(`ollama pull llama3.1:8b` and `ollama pull nomic-embed-text`), then set "
+        "SENTINELAI_AI_LLM_MODEL=llama3.1:8b and SENTINELAI_AI_EMBEDDING_MODEL=nomic-embed-text. "
+        "No API key is required. Omit --ai to run a scanner-only scan.",
+        ExitCode.INVALID_INPUT,
+    )
+
+
 def _render_structured_content(format: str, result: ScanResult, stats: ScanStatistics) -> str:
     """Dispatch to the appropriate report generator - shared by `scan` and `report`."""
     if format == "json":
@@ -171,6 +204,19 @@ def scan(
         "and GitLeaks. Off by default: the extended set needs Trivy's vulnerability database "
         "and network access to osv.dev, and reports dependency advisories that the default "
         "code-scanner set does not.",
+    ),
+    ai: bool = typer.Option(
+        False,
+        "--ai",
+        help="Require AI enrichment. Fails fast with INVALID_INPUT if SENTINELAI_AI_LLM_MODEL or "
+        "SENTINELAI_AI_EMBEDDING_MODEL is unset, instead of silently producing a scanner-only "
+        "report. Needs a local Ollama server; no API key is involved.",
+    ),
+    no_ai: bool = typer.Option(
+        False,
+        "--no-ai",
+        help="Skip AI enrichment even when both model variables are configured, for a fast, "
+        "deterministic scanner-only run.",
     ),
     severity: Optional[str] = typer.Option(
         None,
@@ -252,6 +298,15 @@ def scan(
     if quick and full:
         _fail("--quick and --full cannot be used together.", ExitCode.INVALID_INPUT)
     mode = ScanMode.QUICK if quick else ScanMode.FULL if full else ScanMode.STANDARD
+
+    if ai and no_ai:
+        _fail("--ai and --no-ai cannot be used together.", ExitCode.INVALID_INPUT)
+    # Validated here, before any scanner runs, so `--ai` with an incomplete
+    # configuration costs nothing. Deferring it to the enrichment block below
+    # would make the user wait out a full scan before being told the run could
+    # never have enriched anything.
+    if ai:
+        _require_ai_configuration()
     # Orthogonal to mode on purpose - --full does not imply --extended, so no
     # existing invocation silently acquires dependency scanning.
     tier = ScannerTier.EXTENDED if extended else ScannerTier.CORE
@@ -317,8 +372,13 @@ def scan(
     )
 
     settings = get_settings()
+    # Three states, one expression: --no-ai always skips; --ai has already been
+    # validated above so it always enriches; with neither flag the pre-existing
+    # auto-detect applies unchanged, which is what keeps every existing
+    # invocation - and every benchmark - behaving exactly as before.
     ai_configured = settings.llm_model is not None and settings.embedding_model is not None
-    if ai_configured:
+    enrich = False if no_ai else (True if ai else ai_configured)
+    if enrich:
         # Rebuilds repository context via the backend rather than threading it through
         # FindingsProvider: LiveFindingsProvider already builds one internally, but
         # ScanResult (the frozen FindingsProvider contract) has no field to carry it
@@ -353,6 +413,8 @@ def scan(
             _fail_from_exception("AI enrichment failed", exc, ExitCode.PROVIDER_ERROR, debug)
         result = result.model_copy(update={"ai_findings": ai_findings})
         logger.info("AI enrichment completed: %d findings enriched", len(ai_findings))
+    elif no_ai:
+        logger.info("AI enrichment skipped: --no-ai")
     else:
         logger.info("AI enrichment skipped: not configured (SENTINELAI_AI_LLM_MODEL/SENTINELAI_AI_EMBEDDING_MODEL not set)")
 
