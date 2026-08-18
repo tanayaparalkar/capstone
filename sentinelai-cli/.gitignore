@@ -1,0 +1,40 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+venv/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment / secrets - never commit real values
+.env
+.env.*
+
+# Logs
+*.log
+
+report.md
+report.html
+report.json
+scan-result.json
+sentinelai-report.html
+sentinelai-report.md
+sentinelai-results.sarif
+*.sarif

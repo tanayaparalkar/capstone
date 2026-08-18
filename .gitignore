@@ -1,0 +1,34 @@
+# Generated scan output and reports.
+#
+# SentinelAI writes its reports wherever --output points, which during
+# development and demos is usually the repository root. None of it is source:
+# every file matched here is reproducible by re-running the commands in
+# sentinelai-manual-test/README.md, and the measurements derived from these
+# artifacts are recorded in POLISH_REPORT.md rather than by committing the
+# raw JSON.
+#
+# sentinelai-cli/.gitignore covers the same patterns for scans run from inside
+# the package directory; this file covers scans run from the repository root.
+scan-result*.json
+sentinelai-cli-scan*.json
+ai-latency-run*.json
+sentinelai-report*.html
+sentinelai-report*.md
+*.sarif
+report.json
+report.md
+report.html
+
+# Docker run output. sentinelai-cli/README.md's documented container
+# commands mount ./sentinelai-output as the writable /output target, so a
+# normal `docker run` leaves this directory behind in whatever repository
+# was scanned - including this one.
+sentinelai-output/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# OS
+.DS_Store

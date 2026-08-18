@@ -1,0 +1,168 @@
+name: SentinelAI CI
+
+# Runs the SentinelAI CLI's own test suite, then runs SentinelAI against
+# this repository as a live demonstration of the DevSecOps security-gate
+# workflow: scan once, save the result, generate SARIF + HTML from that
+# saved result (never re-scanning), enforce a --fail-on threshold, and
+# preserve all reports as artifacts regardless of outcome.
+#
+# `sentinelai scan` always uses LiveFindingsProvider (see
+# sentinelai/main.py's _get_provider() - there is no CLI flag or env var
+# to select MockFindingsProvider instead), which runs the real Semgrep,
+# Bandit, and GitLeaks scanners against the checked-out repository via
+# subprocess. The "Install scanner tools" step below installs exactly
+# those three so this step can actually succeed. No LLM or database API
+# is involved - AI enrichment only runs when SENTINELAI_AI_LLM_MODEL and
+# SENTINELAI_AI_EMBEDDING_MODEL are set, which this workflow never does -
+# so this job still requires no secrets or API keys of any kind. See
+# sentinelai-cli/README.md's "CI/CD Integration" section for the
+# equivalent commands to run locally.
+
+"on":
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  security-scan:
+    name: Test and scan
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sentinelai-cli
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Dependencies come from pyproject.toml's own [project] and
+      # [project.optional-dependencies].dev tables - nothing is
+      # duplicated into this workflow.
+      - name: Install SentinelAI CLI
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run test suite
+        run: pytest -v
+
+      # The core scanner tier (see sentinelai/providers/live_provider.py's
+      # _default_registry()) shells out to these three executables by
+      # their bare name - without this step, "Run SentinelAI scan" below
+      # fails with PROVIDER_ERROR because the first missing tool aborts
+      # the whole scan (ScannerOrchestrator fails closed on the first
+      # failure). The scan below runs the core tier, so these three are
+      # what it strictly requires.
+      - name: Install scanner tools (Semgrep, Bandit, GitLeaks)
+        env:
+          # Pinned, not "latest": CI should be deterministic - a new
+          # GitLeaks release should never silently change what this job
+          # runs. Bump deliberately, on purpose, when there's a reason to.
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          python -m pip install semgrep==1.172.0 bandit==1.9.4
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          rm gitleaks.tar.gz
+          semgrep --version
+          bandit --version
+          gitleaks version
+
+      # Trivy and OSV-Scanner - the extended tier's dependency scanners -
+      # are deliberately NOT installed here.
+      #
+      # This workflow never runs an extended scan. The gate scan below is
+      # core-tier (dependency advisories are published and amended
+      # continuously, so gating on them would fail this job on days when
+      # nothing in this repository changed), and the "Run test suite" step
+      # above excludes the benchmark-marked tests that would use them -
+      # pyproject.toml sets `addopts = "-m 'not benchmark'"`. Installing
+      # two binaries no step consumes would add two network downloads and
+      # two more ways for this job to fail, for nothing: it would make the
+      # core scan depend on the dependency scanners without ever using
+      # them.
+      #
+      # To add an extended job later, this is the verified recipe - the
+      # exact versions the Trivy/OSV wrappers' documented JSON-shape and
+      # exit-code behavior were confirmed against, pinned for the same
+      # reason GITLEAKS_VERSION is:
+      #
+      #   - name: Install dependency scanner tools (Trivy, OSV-Scanner)
+      #     env:
+      #       TRIVY_VERSION: "0.74.0"
+      #       OSV_SCANNER_VERSION: "2.5.1"
+      #     run: |
+      #       curl -sSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o trivy.tar.gz
+      #       tar -xzf trivy.tar.gz trivy && sudo mv trivy /usr/local/bin/trivy && rm trivy.tar.gz
+      #       curl -sSL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" -o osv-scanner
+      #       chmod +x osv-scanner && sudo mv osv-scanner /usr/local/bin/osv-scanner
+      #
+      # That job must also stay separate from the gate below, which
+      # asserts a single `sentinelai scan` invocation.
+
+      # SentinelAI's own --fail-on threshold can legitimately exit 1
+      # (SECURITY_FINDINGS). That must not be treated as a broken CI
+      # step, so the exit code is captured explicitly rather than
+      # letting the shell step fail outright - it's interpreted in the
+      # "Evaluate SentinelAI result" step below, after reports are
+      # generated and uploaded.
+      - name: Run SentinelAI scan (JSON snapshot + security gate)
+        id: sentinelai_scan
+        run: |
+          set +e
+          sentinelai scan . --format json --output scan-result.json --fail-on high
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      # Exit codes 0 (success) and 1 (security findings) both mean the
+      # scan itself completed and scan-result.json was written - see
+      # sentinelai/core/exit_codes.py. Only in those cases is there a
+      # saved result to generate further reports from. Codes 2-4 mean
+      # the scan didn't complete; report generation is skipped and the
+      # final step below fails the job as a tool error.
+      - name: Generate SARIF report from saved scan result
+        if: fromJSON(steps.sentinelai_scan.outputs.exit_code) < 2
+        run: sentinelai report scan-result.json --format sarif --output sentinelai-results.sarif
+
+      - name: Generate HTML report from saved scan result
+        if: fromJSON(steps.sentinelai_scan.outputs.exit_code) < 2
+        run: sentinelai report scan-result.json --format html --output sentinelai-report.html
+
+      # Always upload whatever reports exist, even if the scan or a
+      # later step failed - a security-gate failure or a tool failure
+      # is exactly when the evidence matters most.
+      - name: Upload SentinelAI security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinelai-security-reports
+          path: |
+            sentinelai-cli/scan-result.json
+            sentinelai-cli/sentinelai-results.sarif
+            sentinelai-cli/sentinelai-report.html
+          if-no-files-found: warn
+
+      - name: Evaluate SentinelAI result
+        run: |
+          code="${{ steps.sentinelai_scan.outputs.exit_code }}"
+          if [ "$code" = "0" ]; then
+            echo "SentinelAI: scan succeeded, no findings crossed the --fail-on threshold."
+          elif [ "$code" = "1" ]; then
+            echo "SentinelAI: SECURITY GATE FAILED - findings at or above 'high' severity were found."
+            echo "This is a security policy outcome, not a tool failure. See the uploaded reports."
+            exit 1
+          elif [ "$code" = "2" ]; then
+            echo "SentinelAI: INVALID INPUT - the scan command itself was misconfigured. This is a tool/workflow bug, not a security finding."
+            exit 1
+          elif [ "$code" = "3" ]; then
+            echo "SentinelAI: PROVIDER ERROR - the findings provider failed to produce a scan result. This is a tool/integration failure, not a security finding."
+            exit 1
+          else
+            echo "SentinelAI: INTERNAL ERROR (exit code $code) - an unexpected failure inside SentinelAI itself. This is a tool bug, not a security finding."
+            exit 1
+          fi
