@@ -14,6 +14,8 @@ The backward-compatibility tests here matter most. With neither flag the
 behaviour must be bit-for-bit what it always was, because every existing
 invocation, every benchmark, and this project's own CI pass no flag.
 """
+import re
+
 import pytest
 from typer.testing import CliRunner
 
@@ -76,7 +78,23 @@ def _configure(monkeypatch):
 
 
 def _spy_enrichment(monkeypatch):
-    """Record whether enrich_findings was reached, without running the AI layer."""
+    """Record whether enrich_findings was reached, without running the AI layer.
+
+    Patching enrich_findings alone is not enough. main.py builds the retriever
+    and the generate function as *arguments* to that call:
+
+        enrich_findings(findings, create_default_retriever(), create_llm_generate_fn(), ...)
+
+    so both factories run before the patched function is ever entered. And
+    ai/retrieval/in_memory_retriever.py embeds the whole knowledge base eagerly
+    in its constructor, which is a real HTTP request to Ollama. On a machine
+    with Ollama running that quietly succeeds; on one without it - every CI
+    runner - it raises and the CLI correctly reports PROVIDER_ERROR, so the
+    test failed for a reason that had nothing to do with what it was checking.
+
+    Both factories are therefore stubbed here. The stubs are deliberately inert:
+    these tests assert *whether* enrichment was reached, never what it produced.
+    """
     calls = []
 
     def fake_enrich(*args, **kwargs):
@@ -86,6 +104,8 @@ def _spy_enrichment(monkeypatch):
     import sentinelai.main as main_module
 
     monkeypatch.setattr(main_module, "enrich_findings", fake_enrich)
+    monkeypatch.setattr(main_module, "create_default_retriever", lambda: object())
+    monkeypatch.setattr(main_module, "create_llm_generate_fn", lambda: (lambda *a, **k: ""))
     return calls
 
 
@@ -270,8 +290,24 @@ def test_ai_flag_does_not_affect_the_scanner_tier(monkeypatch):
 # --- help text --------------------------------------------------------------------------------------------------------
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _plain(text: str) -> str:
+    """Help output with styling and line-wrapping removed.
+
+    Typer's rich_utils force-enables terminal mode when GITHUB_ACTIONS is set,
+    so on CI the help text arrives with ANSI styling injected *inside* option
+    names - `--extended` stops being a substring even though it is present and
+    correctly documented. Rich also hard-wraps to the console width. Both are
+    presentation, not contract: these tests assert that a flag is documented,
+    not how it is coloured or where it wraps.
+    """
+    return " ".join(_ANSI.sub("", text).split())
+
+
 def test_both_flags_are_documented_in_help():
-    output = runner.invoke(app, ["scan", "--help"]).output
+    output = _plain(runner.invoke(app, ["scan", "--help"]).output)
 
     assert "--ai" in output
     assert "--no-ai" in output

@@ -10,6 +10,7 @@ keeps running exactly those three. So every way a default scan could
 silently acquire a dependency scanner (a new default, --full implying it,
 a registry listing everything) has an explicit test proving it does not.
 """
+import re
 import subprocess
 from unittest.mock import patch
 
@@ -235,8 +236,22 @@ def test_extended_composes_with_mode_rather_than_replacing_it(monkeypatch):
     assert calls[0] == (ScanMode.QUICK, ScannerTier.EXTENDED)
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _plain(text: str) -> str:
+    """Help output with styling and line-wrapping removed.
+
+    Typer force-enables terminal mode when GITHUB_ACTIONS is set, injecting
+    ANSI styling inside option names so `--extended` is no longer a substring
+    of the raw output even though it is documented. Styling and wrap points are
+    presentation, not the contract this test checks.
+    """
+    return " ".join(_ANSI.sub("", text).split())
+
+
 def test_extended_is_documented_in_help():
-    output = runner.invoke(app, ["scan", "--help"]).output
+    output = _plain(runner.invoke(app, ["scan", "--help"]).output)
 
     assert "--extended" in output
     assert "Trivy" in output

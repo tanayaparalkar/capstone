@@ -100,7 +100,12 @@ def test_cli_scan_reports_a_real_chained_provider_error_cleanly(monkeypatch, tmp
     result = runner.invoke(app, ["scan", str(tmp_path)])
 
     assert result.exit_code == ExitCode.PROVIDER_ERROR
-    assert "semgrep exited with status 2" in result.stderr
+    # Whitespace-flattened for this phrase only: Rich wraps stderr to the
+    # console width, and whether "semgrep exited with status 2" straddles a
+    # line break depends on the length of tmp_path - which differs between a
+    # macOS /private/var/folders/... path and a CI /tmp/pytest-of-runner/...
+    # one. The message content is the contract; its wrap points are not.
+    assert "semgrep exited with status 2" in " ".join(result.stderr.split())
     assert "Traceback" not in result.output
 
 
