@@ -152,8 +152,8 @@ jobs, and the difference is mostly latency:
 | | **Scanner-only** (default) | **AI-enriched** (opt-in) |
 |---|---|---|
 | Setup | none | local Ollama + two models |
-| Typical runtime | ~4 s on a small repository | ~145 s on the same repository |
-| Cost model | fixed scanner startup | one local model request **per finding** |
+| Typical runtime | ~4 s on a small repository | ~285 s on the same repository (approximate local measurement — see below) |
+| Cost model | fixed scanner startup | **three** local model requests per **correlated issue** |
 | Output | findings, severities, all report formats, `--fail-on` gating | the same, plus a per-finding explanation, impact, and remediation |
 | Best for | **CI gating** — fast, deterministic, no secrets | **local triage** — reading and understanding findings |
 
@@ -162,10 +162,26 @@ every report format. Scanner-only is not a degraded mode: it is what this
 project's own CI runs on every push. Dependency scanning is a separate,
 opt-in axis — see "Scanner tiers" below.
 
-Because AI-enriched mode is sequential and issues one request per finding, its
-runtime scales with finding count, which is why it is documented as a local
-developer-triage workflow rather than a CI gate. Measured figures for both modes
-are in `../PAPER_RESULTS.md`.
+The AI-enriched pipeline is multi-agent and runs sequentially, so its runtime
+scales with finding count — which is why it is documented as a local
+developer-triage workflow rather than a CI gate. Each correlated issue costs
+**three generation calls**: evidence analysis, exploit and remediation analysis,
+then a grounding critique. The benchmark repository has 13 correlated issues, so
+a full enrichment run makes 39 generation calls.
+
+**The ~285 s figure is an approximate local measurement, not a latency
+promise.** It is the median of three controlled consecutive runs — 279.90 s,
+285.31 s, and 304.80 s, with a warm-up run discarded — using `llama3.1:8b` for
+generation and `nomic-embed-text` for embeddings on an idle 10-core Apple
+Silicon machine. Results vary with hardware, model, quantisation, and machine
+load; runtime can increase substantially under competing CPU/GPU load. Treat it
+as an order-of-magnitude guide for your own setup rather than a number to plan
+against.
+
+`../PAPER_RESULTS.md` records a lower figure for AI enrichment. It is a
+historical record of the earlier single-call-per-finding pipeline that preceded
+this multi-agent workflow, kept as measured, and is not a claim about current
+behaviour.
 
 ## Scanner tiers
 
