@@ -210,8 +210,9 @@ scan succeeds on a machine that has neither.
 
 1. **Trivy** on `PATH` — verified against **0.74.0**.
 2. **OSV-Scanner** on `PATH` — verified against **2.5.1**.
-3. **A dependency source OSV recognizes** in the scanned tree (a
-   `requirements.txt`, lockfile, SBOM, and so on).
+3. **A dependency source OSV recognizes** somewhere in the scanned tree (a
+   `requirements.txt`, lockfile, SBOM, and so on). Nesting is fine — the whole
+   tree is searched, not just the directory you point at.
 
 ```bash
 brew install trivy osv-scanner        # macOS; see each project for Linux
@@ -224,6 +225,11 @@ exits 128 with `No package sources found`, and SentinelAI treats that as a
 scanner failure, not an empty result. If you want to scan such a repository,
 drop `--extended` — the core tier covers it.
 
+One thing to know about "somewhere in the tree": OSV-Scanner honours
+`.gitignore`, so a manifest inside an ignored directory (a vendored or
+build-output path, say) is not discovered, and a repository whose *only*
+manifest is ignored still returns exit 3.
+
 ### The dependency scanners
 
 Both are invoked as subprocesses, exactly like the core three.
@@ -233,9 +239,14 @@ Both are invoked as subprocesses, exactly like the core three.
   GitLeaks is this project's dedicated secret scanner and enabling both would
   report every secret twice. It needs a local vulnerability database, which it
   downloads on first use (~108 MB, then cached).
-- **OSV-Scanner** runs as `osv-scanner scan source --format json`. It queries
-  osv.dev at scan time, so it needs network access, and it also resolves
-  *transitive* dependencies that never appear in your manifest.
+- **OSV-Scanner** runs as `osv-scanner scan source --format json --recursive`.
+  It queries osv.dev at scan time, so it needs network access, and it also
+  resolves *transitive* dependencies that never appear in your manifest.
+  `--recursive` is not optional: without it OSV inspects only the top level of
+  the directory it is given, so scanning a repository root whose manifests sit
+  in subdirectories would report `No package sources found` and fail the scan.
+  It widens where OSV looks, and nothing else — a tree with no manifest at any
+  depth still fails closed exactly as described above.
 
 **OSV group-level deduplication.** OSV reports the same underlying issue once
 per advisory database that carries it, then states the equivalence itself in
