@@ -472,7 +472,7 @@ Confirming which mode you're in:
 
 ```bash
 # scanner-only: "unavailable"; AI enrichment: "available"; some failed: "partial"
-sentinelai scan . --format json | python -c 'import json,sys; print(json.load(sys.stdin)["statistics"]["ai_enrichment_status"])'
+sentinelai scan . --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["statistics"]["ai_enrichment_status"])'
 ```
 
 ### Partial vs. total AI failure
@@ -491,8 +491,8 @@ purpose:
 A finding that fails enrichment is **never dropped** — its scanner result is
 still reported in full. Only the AI commentary is missing, and each skipped
 finding is logged as a warning naming it and the reason. The number that failed
-is `total_findings - matched_ai_findings` in the statistics block whenever the
-status is `partial`.
+is `correlated_findings - matched_ai_findings` in the statistics block whenever
+the status is `partial`, because AI enrichment runs once per correlated issue.
 
 This is why a single malformed model response no longer discards a whole scan:
 with a small local model, one finding occasionally producing unparseable output

@@ -24,7 +24,9 @@ def calculate_statistics(result: ScanResult) -> ScanStatistics:
     matched_ai_findings, confidence, verification_counts = _tally_ai_findings(scanner_findings, ai_findings)
 
     total_findings = len(scanner_findings)
-    ai_enrichment_status = _enrichment_status(total_findings, matched_ai_findings)
+    ai_enrichment_status = _enrichment_status(
+        _expected_enrichments(result, total_findings), matched_ai_findings
+    )
 
     return ScanStatistics(
         total_findings=total_findings,
@@ -94,9 +96,40 @@ def _tally_ai_findings(
     return matched_ai_findings, confidence, verification_counts
 
 
-def _enrichment_status(total_findings: int, matched_ai_findings: int) -> AIEnrichmentStatus:
+def _enrichment_status(expected_enrichments: int, matched_ai_findings: int) -> AIEnrichmentStatus:
+    """Classify enrichment completeness against the number of enrichments actually expected.
+
+    `expected_enrichments` is the *unit the AI pipeline enriches*, not the raw
+    finding count - see _expected_enrichments below for why those differ.
+
+    `>=` rather than `==` for the AVAILABLE case: matched can only exceed the
+    expectation if the two were counted against different units, and reporting
+    "partial" for more enrichment than expected would be the same category of
+    false alarm this function exists to avoid.
+    """
     if matched_ai_findings == 0:
         return AIEnrichmentStatus.UNAVAILABLE
-    if total_findings > 0 and matched_ai_findings == total_findings:
+    if expected_enrichments > 0 and matched_ai_findings >= expected_enrichments:
         return AIEnrichmentStatus.AVAILABLE
     return AIEnrichmentStatus.PARTIAL
+
+
+def _expected_enrichments(result: ScanResult, total_findings: int) -> int:
+    """How many AI enrichments a fully successful run should produce.
+
+    ai/pipeline.py enriches once per *correlated issue*, not once per raw
+    finding: main.py passes `correlated_findings=result.correlated_findings`,
+    and the pipeline emits one AIEnrichedFinding per group, keyed on the group's
+    canonical raw finding_id. On the benchmark repository that is 13 enrichments
+    for 17 raw findings.
+
+    Comparing against the raw count therefore reported `partial` on a completely
+    successful run - 13 != 17 - and made AVAILABLE unreachable for any repository
+    where correlation grouped anything. Worse, the documented failure count
+    (expected minus matched) implied four findings had failed when none had.
+
+    Falls back to `total_findings` when there are no correlation groups at all,
+    which keeps every pre-correlation result - and any caller that builds a
+    ScanResult without them - classified exactly as before.
+    """
+    return len(result.correlated_findings) or total_findings
