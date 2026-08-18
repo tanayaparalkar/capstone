@@ -197,6 +197,8 @@ and the resulting **exit code 0**.
 
 ## Reproducibility
 
-Every figure above is reproducible from the committed repository. See
+The §5.1 scanner-only figures are reproducible from the committed repository;
+the §5.2–§5.4 AI figures record the earlier per-raw-finding pipeline and are
+preserved as measured rather than regenerable from the current code. See
 `sentinelai-manual-test/README.md` for the exact commands, and `POLISH_REPORT.md`
 for the per-change record behind §5.3–§5.5.
