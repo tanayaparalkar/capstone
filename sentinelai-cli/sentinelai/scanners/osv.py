@@ -9,9 +9,27 @@ benchmark repository:
 
 - Command form. 2.x removed the v1 top-level invocation
   (`osv-scanner --format json --lockfile=...`); the current form is the
-  `scan source` subcommand, which walks a directory and extracts every
-  package source it recognizes. The v1 form is not accepted and is not
-  used here.
+  `scan source` subcommand, which extracts every package source it
+  recognizes. The v1 form is not accepted and is not used here.
+
+- `--recursive` is required, not optional. Without it `scan source`
+  examines only the *top level* of the target directory and does not
+  descend, which is a silent trap: pointing it at a repository root whose
+  manifests live in subdirectories reports "No package sources found" and
+  exits 128 - indistinguishable, from the outside, from a repository that
+  genuinely has no dependencies. Measured on this project: the repository
+  root exits 128 without the flag and exits 1 with it, discovering both
+  `sentinelai-cli/requirements.txt` and
+  `sentinelai-manual-test/requirements.txt`. Pointing the same command
+  directly at a directory that *does* hold the manifest at its top level
+  is unaffected - 25 groups either way - so the flag fixes the nested case
+  without changing the flat one.
+
+  This does not weaken the fail-closed contract below. A tree with no
+  recognized manifest at any depth still exits 128 with `--recursive`;
+  the flag widens where OSV looks, it does not make an empty search
+  succeed. `--allow-no-lockfiles`, which would turn that failure into a
+  success, is deliberately not used.
 
 - Exit codes. 0 means the scan succeeded and found nothing; 1 means the
   scan succeeded and found vulnerabilities - the same convention Bandit
@@ -115,14 +133,25 @@ _SUCCESS_RETURN_CODES = (0, 1)
 
 
 class OSVScanner(Scanner):
-    """Runs `osv-scanner scan source --format json` and converts its groups into ScannerFinding objects."""
+    """Runs `osv-scanner scan source --format json --recursive` and converts its groups into ScannerFinding objects."""
 
     def __init__(self, executable: str = "osv-scanner") -> None:
         self._executable = executable
 
     def scan(self, context: RepositoryContext) -> List[ScannerFinding]:
         repository_root = str(context.repository.absolute_path)
-        command = [self._executable, "scan", "source", "--format", "json", repository_root]
+        # --recursive: without it OSV inspects only the top level of the target
+        # and a repository whose manifests are nested fails as "No package
+        # sources found". See the module docstring for the measurement.
+        command = [
+            self._executable,
+            "scan",
+            "source",
+            "--format",
+            "json",
+            "--recursive",
+            repository_root,
+        ]
 
         try:
             completed = subprocess.run(command, capture_output=True, encoding="utf-8", check=False)

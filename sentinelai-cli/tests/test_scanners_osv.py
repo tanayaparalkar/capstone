@@ -118,8 +118,35 @@ def test_command_uses_the_v2_scan_source_form(tmp_path):
 
     command = run.call_args[0][0]
     assert command[:5] == ["osv-scanner", "scan", "source", "--format", "json"]
-    assert command[5] == str(tmp_path.resolve())
+    assert command[-1] == str(tmp_path.resolve())
     assert not any(arg.startswith("--lockfile") for arg in command)
+
+
+def test_command_is_recursive_so_nested_manifests_are_found(tmp_path):
+    """Without --recursive, OSV inspects only the target's top level.
+
+    A repository whose manifests live in subdirectories - which is the normal
+    shape, and this project's own shape - would exit 128 "No package sources
+    found" and be reported as a scanner failure.
+    """
+    with patch("sentinelai.scanners.osv.subprocess.run", return_value=_completed(stdout=_payload())) as run:
+        OSVScanner().scan(_context(tmp_path))
+
+    command = run.call_args[0][0]
+    assert "--recursive" in command
+    assert command.index("--recursive") < len(command) - 1, "--recursive must precede the target path"
+
+
+def test_no_flag_suppresses_the_missing_manifest_failure(tmp_path):
+    """--allow-no-lockfiles would turn exit 128 into a success. It must not appear.
+
+    Widening *where* OSV looks is the fix; making an empty search succeed would
+    silently drop dependency coverage instead of failing closed.
+    """
+    with patch("sentinelai.scanners.osv.subprocess.run", return_value=_completed(stdout=_payload())) as run:
+        OSVScanner().scan(_context(tmp_path))
+
+    assert "--allow-no-lockfiles" not in run.call_args[0][0]
 
 
 def test_custom_executable_is_honoured(tmp_path):
