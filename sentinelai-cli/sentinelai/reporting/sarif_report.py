@@ -52,11 +52,13 @@ dependency weight here. This is a deliberate, documented limitation.
 """
 import json
 from typing import Optional
+from typing import Optional
 
 from .. import __version__
 from ..contracts import AIEnrichedFinding, ScanResult, ScannerFinding, Severity
 from ..core import build_ai_lookup, build_correlation_lookup, normalize_file_uri
 from ..statistics import ScanStatistics
+from .models import PatchApplicationReport
 
 SARIF_SCHEMA_URI = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
 SARIF_VERSION = "2.1.0"
@@ -69,7 +71,7 @@ _SEVERITY_TO_LEVEL = {
 }
 
 
-def build_sarif_report(result: ScanResult, statistics: ScanStatistics) -> dict:
+def build_sarif_report(result: ScanResult, statistics: ScanStatistics, patch_application: Optional[PatchApplicationReport] = None) -> dict:
     scanner_findings = sorted(result.scanner_findings, key=lambda f: f.finding_id)
     ai_by_id = build_ai_lookup(result)
     corr_by_id = build_correlation_lookup(result)
@@ -81,7 +83,9 @@ def build_sarif_report(result: ScanResult, statistics: ScanStatistics) -> dict:
         for f in scanner_findings
     ]
 
-    return {
+    # Bound rather than returned directly so the optional patch block can be
+    # attached without duplicating the whole document for the two cases.
+    report = {
         "$schema": SARIF_SCHEMA_URI,
         "version": SARIF_VERSION,
         "runs": [
@@ -105,9 +109,22 @@ def build_sarif_report(result: ScanResult, statistics: ScanStatistics) -> dict:
         ],
     }
 
+    # Under the RUN's sentinelai property bag - the same conservative placement
+    # the AI fields already use. A consumer that knows only base SARIF sees an
+    # ordinary static-analysis run; one that knows the namespace gets the patch
+    # stage. Nothing is added to `results`, because a patch outcome is not a
+    # finding and must not be mistaken for one.
+    if patch_application is not None:
+        report["runs"][0]["properties"]["sentinelai"]["patchApplication"] = (
+            patch_application.model_dump(mode="json")
+        )
 
-def to_sarif(result: ScanResult, statistics: ScanStatistics, *, indent: int = 2) -> str:
-    return json.dumps(build_sarif_report(result, statistics), indent=indent)
+    return report
+
+
+def to_sarif(result: ScanResult, statistics: ScanStatistics, *, indent: int = 2,
+             patch_application: Optional[PatchApplicationReport] = None) -> str:
+    return json.dumps(build_sarif_report(result, statistics, patch_application), indent=indent)
 
 
 def _rule_id(f: ScannerFinding) -> str:
@@ -171,6 +188,7 @@ def _build_result(f: ScannerFinding, ai: Optional[AIEnrichedFinding], rule_index
         properties["ai"] = _ai_properties(ai)
 
     result["properties"] = {"sentinelai": properties}
+
     return result
 
 

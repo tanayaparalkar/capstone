@@ -56,6 +56,7 @@ from .ai.factory import create_default_retriever, create_llm_generate_fn
 from .ai.repository_context import from_backend_context
 from .ai.verifier import verify_finding
 from .backend.context_builder import build_repository_context
+from .patching import run_patches
 from .backend.loader import load_repository
 from .contracts import ScanMode, ScannerTier, ScanResult, Severity
 from .core import ExitCode, exceeds_fail_on_threshold, filter_by_severity
@@ -69,8 +70,18 @@ from .presentation import (
     render_scan_header,
     render_summary,
 )
+from .presentation.patches import render_patch_application
 from .providers import FindingsProvider, LiveFindingsProvider
-from .reporting import ReportLoadError, load_scan_result, to_html, to_json, to_markdown, to_sarif
+from .reporting import (
+    ReportLoadError,
+    build_patch_application_report,
+    load_patch_application,
+    load_scan_result,
+    to_html,
+    to_json,
+    to_markdown,
+    to_sarif,
+)
 from .statistics import ScanStatistics, calculate_statistics
 
 app = typer.Typer(
@@ -153,15 +164,20 @@ def _require_ai_configuration() -> None:
     )
 
 
-def _render_structured_content(format: str, result: ScanResult, stats: ScanStatistics) -> str:
+def _render_structured_content(
+    format: str,
+    result: ScanResult,
+    stats: ScanStatistics,
+    patch_application=None,
+) -> str:
     """Dispatch to the appropriate report generator - shared by `scan` and `report`."""
     if format == "json":
-        return to_json(result, stats)
+        return to_json(result, stats, patch_application=patch_application)
     if format == "markdown":
-        return to_markdown(result, stats)
+        return to_markdown(result, stats, patch_application)
     if format == "html":
-        return to_html(result, stats)
-    return to_sarif(result, stats)  # sarif
+        return to_html(result, stats, patch_application)
+    return to_sarif(result, stats, patch_application=patch_application)  # sarif
 
 
 def _write_or_print(console: Console, content: str, output: Optional[str], debug: bool) -> None:
@@ -249,6 +265,16 @@ def scan(
         "--details",
         "-d",
         help="Show the full detail view for one finding by ID, e.g. SENT-002 (terminal format only)",
+    ),
+    apply_patches: bool = typer.Option(
+        False,
+        "--apply-patches",
+        help=(
+            "Write AI-proposed fixes into the repository. Off by default: without this flag a "
+            "scan never modifies the scanned files. Each file is backed up under "
+            ".sentinelai/backups/ before it is written, and restored automatically if the write "
+            "cannot be verified. Best effort per finding - a patch that fails never stops the scan."
+        ),
     ),
 ):
     """
@@ -418,6 +444,29 @@ def scan(
     else:
         logger.info("AI enrichment skipped: not configured (SENTINELAI_AI_LLM_MODEL/SENTINELAI_AI_EMBEDDING_MODEL not set)")
 
+    # Opt-in patch application. Deliberately after enrichment and before reporting:
+    # the patches come from AI findings, and the report should describe the scan
+    # that was run rather than the state after it was modified. `patch_run` is
+    # retained rather than rendered - report generation is unchanged in this phase,
+    # and a later one will consume this object.
+    #
+    # sentinelai.patching.run_patches() owns the per-finding loop; this call site
+    # neither validates, backs up, applies nor restores anything. Failures are
+    # recorded per finding and never reach the exit code, so --apply-patches
+    # cannot turn a completed scan into a failed one.
+    patch_run = None
+    if apply_patches:
+        patch_run = run_patches(result.ai_findings, root=repo_path)
+        logger.info(
+            "patch application: %d applied, %d skipped, %d failed, %d rolled back",
+            len(patch_run.applied),
+            len(patch_run.skipped),
+            len(patch_run.failed),
+            len(patch_run.rolled_back),
+        )
+    # One projection, shared by every format - see reporting/patch_section.py.
+    patch_application = build_patch_application_report(patch_run)
+
     if min_severity is not None:
         result = filter_by_severity(result, min_severity)
 
@@ -447,13 +496,14 @@ def scan(
 
         render_summary(console, stats)
         render_findings_table(console, result)
+        render_patch_application(console, patch_application)
 
         if exceeds_fail_on_threshold(stats, fail_on):
             raise typer.Exit(code=ExitCode.SECURITY_FINDINGS)
         return
 
     try:
-        content = _render_structured_content(format, result, stats)
+        content = _render_structured_content(format, result, stats, patch_application)
     except Exception as exc:
         logger.error("report generation failed: format=%s error=%s", format, exc)
         _fail_from_exception("report generation failed", exc, ExitCode.INTERNAL_ERROR, debug)
@@ -512,7 +562,9 @@ def report(
         _fail(str(exc), ExitCode.INVALID_INPUT)
 
     try:
-        content = _render_structured_content(report_format, result, stats)
+        content = _render_structured_content(
+            report_format, result, stats, load_patch_application(Path(input_path))
+        )
     except Exception as exc:
         logger.error("report generation failed: format=%s error=%s", report_format, exc)
         _fail_from_exception("report generation failed", exc, ExitCode.INTERNAL_ERROR, debug)

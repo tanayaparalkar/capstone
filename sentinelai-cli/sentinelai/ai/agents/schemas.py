@@ -50,7 +50,7 @@ from pydantic import (
     model_validator,
 )
 
-from sentinelai.contracts import GroundingVerdict
+from sentinelai.contracts import GroundingVerdict, StructuredPatch
 
 # Strips surrounding whitespace, then requires at least one character - so
 # "   " is rejected rather than silently becoming an empty section.
@@ -179,6 +179,14 @@ class RemediationPlan(BaseModel):
     )
     validation_steps: list[NonBlankStr] = Field(
         default_factory=list, description="How to confirm the fix worked."
+    )
+    structured_patch: Optional[StructuredPatch] = Field(
+        None,
+        description=(
+            "Machine-applicable form of the same fix, when the model can express one. Null "
+            "otherwise, and null is the correct answer whenever a patch cannot be grounded in "
+            "the evidence shown - the same bar patch_suggestion is already held to."
+        ),
     )
 
 

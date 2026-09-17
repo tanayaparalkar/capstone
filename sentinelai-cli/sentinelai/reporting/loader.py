@@ -33,13 +33,14 @@ alongside argument-validation errors, not a distinct exit code.
 """
 import json
 from pathlib import Path
+from typing import Optional
 
 from pydantic import ValidationError
 
 from ..contracts import ScanResult
 from ..core.errors import InvalidInputError
 from ..statistics import ScanStatistics, calculate_statistics
-from .models import REPORT_SCHEMA_VERSION, JSONReport
+from .models import REPORT_SCHEMA_VERSION, JSONReport, PatchApplicationReport
 
 
 class ReportLoadError(InvalidInputError):
@@ -85,3 +86,27 @@ def load_scan_result(path: Path) -> tuple:
     )
     statistics: ScanStatistics = calculate_statistics(result)
     return result, statistics
+
+
+def load_patch_application(path: Path) -> Optional[PatchApplicationReport]:
+    """Read a saved report's patch section, or None when it has none.
+
+    A separate function rather than a third element on load_scan_result's tuple:
+    that signature is consumed by existing callers and widening it would break
+    every one of them for a value most do not want. A report written before this
+    field existed, or by a scan run without --apply-patches, returns None.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReportLoadError(f"could not read '{path}': {exc}") from exc
+
+    if not isinstance(data, dict) or data.get("patch_application") is None:
+        return None
+
+    try:
+        return PatchApplicationReport.model_validate(data["patch_application"])
+    except ValidationError as exc:
+        raise ReportLoadError(
+            f"'{path}' has a patch_application section that does not match the schema:\n{exc}"
+        ) from exc

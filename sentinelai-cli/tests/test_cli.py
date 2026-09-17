@@ -703,7 +703,10 @@ class TestErrorCases:
     def test_unexpected_internal_error_during_rendering_is_internal_error(self, monkeypatch):
         import sentinelai.main as main_module
 
-        def boom(fmt, result, stats):
+        def boom(fmt, result, stats, *args, **kwargs):
+            # *args absorbs the patch_application argument added when patch
+            # results became renderable; this test is about the error path, not
+            # the signature.
             raise RuntimeError("simulated rendering bug")
 
         monkeypatch.setattr(main_module, "_render_structured_content", boom)
