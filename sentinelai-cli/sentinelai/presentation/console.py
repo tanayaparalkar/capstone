@@ -17,6 +17,7 @@ sarif) - a script piping stdout into a JSON parser is unaffected by an
 error message, which shows up on stderr instead.
 """
 import os
+import sys
 from typing import Optional
 
 from rich.console import Console
@@ -27,10 +28,22 @@ _console: Optional[Console] = None
 _error_console: Optional[Console] = None
 
 
+def _ensure_utf8_streams() -> None:
+    if sys.platform == "win32":
+        try:
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            if hasattr(sys.stderr, "reconfigure"):
+                sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def get_console() -> Console:
     """Return the shared stdout Console, configured once."""
     global _console
     if _console is None:
+        _ensure_utf8_streams()
         _console = Console(no_color=_no_color_requested(), highlight=False)
     return _console
 
@@ -39,6 +52,7 @@ def get_error_console() -> Console:
     """Return the shared stderr Console, configured once. Used for errors/diagnostics only."""
     global _error_console
     if _error_console is None:
+        _ensure_utf8_streams()
         _error_console = Console(stderr=True, no_color=_no_color_requested(), highlight=False)
     return _error_console
 

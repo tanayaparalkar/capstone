@@ -65,18 +65,27 @@ def test_validate_repository_empty_directory(tmp_path):
 # --- symlinks ---
 
 
+def _create_symlink(link, target, target_is_directory=False):
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as e:
+        if getattr(e, "winerror", None) == 1314 or "privilege" in str(e).lower():
+            pytest.skip("Symlink creation requires elevated privileges on Windows")
+        raise
+
+
 def test_validate_repository_symlink_to_directory(tmp_path):
     real_dir = tmp_path / "real"
     real_dir.mkdir()
     link = tmp_path / "link"
-    link.symlink_to(real_dir)
+    _create_symlink(link, real_dir, target_is_directory=True)
     result = validate_repository(str(link))
     assert result == real_dir.resolve()
 
 
 def test_validate_repository_broken_symlink(tmp_path):
     broken_link = tmp_path / "broken"
-    broken_link.symlink_to(tmp_path / "does-not-exist-target")
+    _create_symlink(broken_link, tmp_path / "does-not-exist-target")
     with pytest.raises(RepositoryNotFoundError):
         validate_repository(str(broken_link))
 
@@ -84,8 +93,8 @@ def test_validate_repository_broken_symlink(tmp_path):
 def test_validate_repository_symlink_loop(tmp_path):
     loop_a = tmp_path / "loop_a"
     loop_b = tmp_path / "loop_b"
-    loop_a.symlink_to(loop_b)
-    loop_b.symlink_to(loop_a)
+    _create_symlink(loop_a, loop_b)
+    _create_symlink(loop_b, loop_a)
     with pytest.raises(RepositoryNotFoundError):
         validate_repository(str(loop_a))
 

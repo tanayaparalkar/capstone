@@ -11,10 +11,12 @@ for deterministic, tool-free assertions. AI enrichment (Tanaya's layer)
 is opt-in on top of either provider — see "AI Enrichment Configuration"
 below.
 
-Two commands, two distinct jobs:
+Three primary commands:
 
 - **`sentinelai scan`** — retrieves a scan result (from a
-  `FindingsProvider`) and either shows it live or writes a report.
+  `FindingsProvider`), shows it live, writes a report, or optionally interactively fixes issues (`--fix`).
+- **`sentinelai fix`** — runs an end-to-end interactive remediation workflow: scans, narrates vulnerabilities with Rich threat cards and unified visual diffs, prompts for approval, applies atomic patches with AST syntax validation, and executes closed-loop verification.
+- **`sentinelai undo`** — atomically rolls back the most recent remediation session from `.sentinelai_backups/`.
 - **`sentinelai report`** — renders an *existing, already-saved* scan
   result as a report. It never runs a scan again.
 
@@ -590,6 +592,64 @@ sentinelai version
 persisted formats only) and `--output`/`-o` as `scan`, plus a required
 `<input>` argument: the path to a JSON report previously written by
 `scan --format json`.
+
+## Interactive Remediation Workflow (`sentinelai fix`)
+
+SentinelAI features a comprehensive, safe, closed-loop interactive remediation engine that converts abstract scanner findings and AI reasoning into validated source code patches.
+
+```bash
+# Interactively scan and fix issues in the current repository
+sentinelai fix .
+
+# Scan with fix flag (equivalent workflow)
+sentinelai scan . --fix
+
+# Non-interactive CI mode (auto-apply all verified fixes)
+sentinelai fix . -y
+
+# Dry-run simulation (preview diffs and threat cards without writing to disk)
+sentinelai fix . --dry-run
+
+# Revert previous session changes atomically
+sentinelai undo .
+```
+
+### Interactive Decision Prompt
+
+During the remediation session, each finding is presented sequentially with a rich Threat Narrative card and color-coded unified diff. The prompt provides full developer agency:
+
+- `[y]es` — Apply the displayed patch, validate syntax, and verify fix.
+- `[n]o` / `[s]kip` — Reject this patch and proceed to next finding.
+- `[a]ll` — Automatically accept and apply all remaining patches in the session.
+- `[d]etails` — Expand in-depth AI exploit path, blast radius, and remediation guidance.
+- `[q]uit` — Terminate remediation session immediately.
+
+### Safety Architecture & Closed-Loop Verification
+
+1. **Deterministic & AI-Generated Patches:** Leverages structured LLM diffs or deterministic AST-based templates across 13 vulnerability categories.
+2. **Pre-flight AST Syntax Validation:** Patches are validated with `ast.parse` before writing to disk. Malformed or invalid syntax is rejected immediately.
+3. **Multi-File Atomic Snapshotting:** Before any modifications are applied, repository state is preserved in `.sentinelai_backups/<session_id>/`.
+4. **Closed-Loop Rescan Verification:** Upon applying a patch, SentinelAI triggers an internal re-scan to confirm the original finding is resolved and verify no new vulnerabilities or regressions were introduced. If a regression occurs, the patch is automatically rolled back.
+5. **Session Undo:** Run `sentinelai undo` to restore the exact state prior to the last remediation session.
+
+### Framework-Aware Rate Limiting Advisory
+
+When API endpoints, DoS risks, or resource exhaustion vulnerabilities (CWE-400) are identified, SentinelAI automatically detects the repository's web framework (`Flask`, `FastAPI`, `Django`, `Express.js`, or generic Python/Node) and presents framework-native rate limiting configuration advice (e.g. `Flask-Limiter`, `slowapi`, `django-ratelimit`, `express-rate-limit`) to prevent server downtime and resource starvation.
+
+### Supported Vulnerability Classes
+
+- **SQL Injection (CWE-89):** Parameterizes queries with placeholders and tuple argument binding.
+- **Command Injection (CWE-78):** Replaces `os.system()` with `subprocess.run()` list arguments and disables `shell=True`.
+- **Insecure Deserialization (CWE-502):** Replaces unsafe `pickle.loads` with `json.loads` and `yaml.load` with `yaml.safe_load`.
+- **Arbitrary Code Execution (CWE-94):** Replaces dangerous `eval()` with `ast.literal_eval()`.
+- **Weak Cryptography (CWE-327):** Upgrades broken `hashlib.md5()` to `hashlib.sha256()`.
+- **Hardcoded Secrets (CWE-798):** Replaces plaintext credentials and API keys with `os.environ.get()`.
+- **Security Misconfiguration (CWE-16):** Disables hardcoded `DEBUG = True` with environment guards.
+- **Reflected XSS (CWE-79):** Sanitizes untrusted user inputs with `html.escape()`.
+- **Broken Access Control / IDOR (CWE-639 / CWE-284):** Scopes database queries to authenticated user context (`current_user.id`).
+- **Server-Side Request Forgery (SSRF) (CWE-918):** Adds URL scheme and domain whitelist validation guards.
+- **Cross-Site Request Forgery (CSRF) (CWE-352):** Applies `@csrf_protect` decorators to POST endpoints.
+
 
 ## Why the table looks compact
 

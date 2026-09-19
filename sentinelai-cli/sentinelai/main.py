@@ -59,6 +59,7 @@ from .backend.context_builder import build_repository_context
 from .backend.loader import load_repository
 from .contracts import ScanMode, ScannerTier, ScanResult, Severity
 from .core import ExitCode, exceeds_fail_on_threshold, filter_by_severity
+from .patcher import run_remediation_session
 from .presentation import (
     ScanProgress,
     get_console,
@@ -250,6 +251,28 @@ def scan(
         "-d",
         help="Show the full detail view for one finding by ID, e.g. SENT-002 (terminal format only)",
     ),
+    fix: bool = typer.Option(
+        False,
+        "--fix",
+        help="Interactively review and apply recommended fixes for detected vulnerabilities.",
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Interactively review and apply recommended fixes for detected vulnerabilities (alias for --fix).",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Automatically apply all recommended fixes without asking for confirmation.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Simulate the remediation session without modifying files on disk.",
+    ),
 ):
     """
     Scan a repository for vulnerabilities.
@@ -290,6 +313,7 @@ def scan(
     """
     debug: bool = (ctx.obj or {}).get("debug", False)
     console = get_console()
+    fix = fix or interactive
 
     repo_path = Path(path)
     if not repo_path.exists():
@@ -445,6 +469,16 @@ def scan(
                 "Use --format json/markdown/html/sarif to save a report."
             )
 
+        if fix:
+            run_remediation_session(
+                repo_path=repo_path,
+                result=result,
+                console=console,
+                auto_yes=yes,
+                dry_run=dry_run,
+            )
+            return
+
         render_summary(console, stats)
         render_findings_table(console, result)
 
@@ -462,6 +496,99 @@ def scan(
 
     if exceeds_fail_on_threshold(stats, fail_on):
         raise typer.Exit(code=ExitCode.SECURITY_FINDINGS)
+
+
+@app.command()
+def fix(
+    ctx: typer.Context,
+    path: str = typer.Argument(
+        ".", help="Path to the repository to scan and fix (defaults to current directory)"
+    ),
+    quick: bool = typer.Option(False, "--quick", help="Run a quick scan (subset of checks)"),
+    full: bool = typer.Option(False, "--full", help="Run a full scan (all checks)"),
+    extended: bool = typer.Option(
+        False,
+        "--extended",
+        help="Also run the dependency scanners (Trivy, OSV-Scanner) alongside Semgrep, Bandit, and GitLeaks.",
+    ),
+    ai: bool = typer.Option(
+        False,
+        "--ai",
+        help="Require AI enrichment (local Ollama server).",
+    ),
+    no_ai: bool = typer.Option(
+        False,
+        "--no-ai",
+        help="Skip AI enrichment for a deterministic rule-based fix run.",
+    ),
+    severity: Optional[str] = typer.Option(
+        None,
+        "--severity",
+        "-s",
+        help="Only review findings at or above this severity: low, medium, high, critical.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Automatically apply all recommended fixes without asking for confirmation.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Simulate the remediation session without modifying files on disk.",
+    ),
+):
+    """
+    Scan a repository, narrate detected vulnerabilities, and interactively apply fixes.
+    """
+    scan(
+        ctx=ctx,
+        path=path,
+        quick=quick,
+        full=full,
+        extended=extended,
+        ai=ai,
+        no_ai=no_ai,
+        severity=severity,
+        fail_on="none",
+        format="terminal",
+        output=None,
+        details=None,
+        fix=True,
+        yes=yes,
+        dry_run=dry_run,
+    )
+
+
+@app.command()
+def undo(
+    ctx: typer.Context,
+    path: str = typer.Argument(
+        ".", help="Path to the repository whose latest remediation changes should be undone"
+    ),
+):
+    """
+    Revert the most recent set of code changes applied by SentinelAI remediation.
+    """
+    console = get_console()
+    repo_path = Path(path)
+    if not repo_path.exists():
+        _fail(f"path '{path}' does not exist.", ExitCode.INVALID_INPUT)
+
+    from .patcher import restore_latest_backup_session
+
+    reverted = restore_latest_backup_session(repo_path)
+    if not reverted:
+        console.print("[yellow]No recent SentinelAI backup found to revert in this repository.[/yellow]")
+        return
+
+    console.print(f"\n[bold green]=== SentinelAI Rollback ({len(reverted)} file(s) restored) ===[/bold green]\n")
+    for file_name, success in reverted:
+        if success:
+            console.print(f"[green][RESTORED] {file_name}[/green]")
+        else:
+            console.print(f"[red][FAILED] Could not restore {file_name}[/red]")
 
 
 @app.command()
