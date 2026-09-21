@@ -364,6 +364,18 @@ def scan(
         _fail("--quick and --full cannot be used together.", ExitCode.INVALID_INPUT)
     mode = ScanMode.QUICK if quick else ScanMode.FULL if full else ScanMode.STANDARD
 
+    if dry_run and not apply_patches and not fix:
+        # Checked here, with the other flag-coherence rules, rather than at the
+        # patch call site below: the combination can never do anything, so the
+        # user should not pay for a full Semgrep/Bandit/GitLeaks run first.
+        # Fails fast rather than silently doing nothing, matching how --ai
+        # refuses an incoherent combination instead of guessing.
+        _fail(
+            "--dry-run only applies to patch application; pass --apply-patches as well, "
+            "or drop --dry-run",
+            ExitCode.INVALID_INPUT,
+        )
+
     if ai and no_ai:
         _fail("--ai and --no-ai cannot be used together.", ExitCode.INVALID_INPUT)
     # Validated here, before any scanner runs, so `--ai` with an incomplete
@@ -493,15 +505,6 @@ def scan(
     # neither validates, backs up, applies nor restores anything. Failures are
     # recorded per finding and never reach the exit code, so --apply-patches
     # cannot turn a completed scan into a failed one.
-    if dry_run and not apply_patches and not fix:
-        # Fails fast rather than silently doing nothing, matching how --ai
-        # refuses an incoherent combination instead of guessing.
-        _fail(
-            "--dry-run only applies to patch application; pass --apply-patches as well, "
-            "or drop --dry-run",
-            ExitCode.INVALID_INPUT,
-        )
-
     patch_run = None
     if apply_patches:
         patch_run = run_patches(result.ai_findings, root=repo_path, dry_run=dry_run)
