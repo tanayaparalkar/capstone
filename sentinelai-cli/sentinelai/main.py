@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+import typer.rich_utils
 from rich.console import Console
 
 from . import __version__
@@ -91,6 +92,18 @@ app = typer.Typer(
     help="SentinelAI - AI-Powered Vulnerability Detection for DevSecOps",
     add_completion=False,
 )
+
+# Typer renders --help through Rich, which treats GitHub Actions as a
+# colour-capable terminal even though stdout there is a pipe. Rich styles
+# each hyphen of an option separately, so "--apply-patches" is emitted as
+# ESC "-" ESC "-apply-patches" and the flag name never appears as a literal
+# string: `sentinelai scan --help | grep -- --apply-patches` finds nothing.
+# Keep the styled help when a real terminal is attached, and emit plain text
+# whenever it is not, which is the usual convention for colourised CLIs.
+# hasattr-guarded because FORCE_TERMINAL is a Typer internal: if a future
+# Typer drops it, help simply keeps its colour rather than failing to import.
+if not sys.stdout.isatty() and hasattr(typer.rich_utils, "FORCE_TERMINAL"):
+    typer.rich_utils.FORCE_TERMINAL = False
 
 # Operational logging, separate from the user-facing console output above:
 # silent by default (no handler is configured here - that's left to
