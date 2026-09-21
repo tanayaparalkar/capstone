@@ -148,6 +148,11 @@ def synthesize(
         impact=assessment.exploit.impact,
         remediation=_build_remediation(assessment),
         patch_suggestion=assessment.remediation.patch_suggestion,
+        # Copied by reference, not rebuilt: StructuredPatch is already validated and
+        # frozen, and this module generates nothing. build_verifier_input() below
+        # deliberately does NOT carry it - ai/verifier.py's deterministic check reads
+        # the narrative text, and its input shape stays exactly as it was.
+        structured_patch=assessment.remediation.structured_patch,
         # Computed outside the model, passed through untouched.
         confidence_score=confidence_score,
         confidence_label=confidence_label,

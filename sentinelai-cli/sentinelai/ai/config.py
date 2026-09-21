@@ -83,6 +83,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from sentinelai.backend.code_context import DEFAULT_CONTEXT_LINES
+
 _ENV_PREFIX = "SENTINELAI_AI_"
 
 
@@ -116,6 +118,18 @@ class AISettings(BaseModel):
     )
     enable_verification: bool = Field(
         default=True, description="Whether the verification step runs before a finding is emitted."
+    )
+    code_context_lines: int = Field(
+        default=DEFAULT_CONTEXT_LINES,
+        ge=0,
+        description=(
+            "Lines of surrounding source shown either side of a finding's own location in every "
+            "agent prompt. The default matches backend/code_context.py's own default, which in "
+            "turn matches backend/snippets.py's retrieval chunk size. Raise it when a fix needs "
+            "more of the enclosing function to be visible; 0 shows the finding's own lines only. "
+            "This widens the prompt for all three agents at once, so large values cost tokens on "
+            "every call - and a model with a small context window will silently truncate."
+        ),
     )
     log_level: LogLevel = Field(default=LogLevel.INFO, description="Logging level for sentinelai.ai's logger.")
     llm_provider: Optional[str] = Field(

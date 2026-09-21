@@ -1,0 +1,27 @@
+# GitLeaks configuration for the SentinelAI CLI package.
+#
+# The CI security gate runs `sentinelai scan . --fail-on high`, which shells
+# out to `gitleaks dir <path>`. GitLeaks auto-loads this file from the
+# directory it is pointed at, so the allowlist travels with the code rather
+# than depending on where the scan was launched from.
+#
+# useDefault keeps every built-in GitLeaks rule active. Nothing here disables
+# a rule, relaxes a severity, or excludes a path: the gate stays exactly as
+# strict as it was.
+[extend]
+useDefault = true
+
+# tests/test_phase5_e2e.py feeds a deliberately fake API key to the
+# remediation engine to prove it rewrites hardcoded secrets into os.environ.
+# The value is test input, never a credential, but it is high-entropy enough
+# to trip generic-api-key - in the source file and again in the __pycache__
+# bytecode that `pytest` leaves behind before the scan step runs.
+#
+# Allowlisting the literal value rather than the file or the path means the
+# exemption cannot widen: the regex is anchored, so it matches only a secret
+# whose entire value is this exact string. Any other secret in this same
+# file, and this same rule everywhere else in the repository, still fail CI.
+[[rules]]
+id = "generic-api-key"
+  [rules.allowlist]
+  regexes = ['''^0123456789abcdef0123456789abcdef$''']

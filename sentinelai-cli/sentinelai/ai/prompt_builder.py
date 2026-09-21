@@ -75,8 +75,10 @@ a larger one.
 """
 from typing import Optional
 
+from sentinelai.backend.code_context import CodeContext, extract_code_context
 from sentinelai.contracts import ScannerFinding
 
+from .config import get_settings
 from .repository_context import RepositoryContext
 from .retrieval import RetrievedChunk
 
@@ -121,6 +123,51 @@ def _format_finding_section(finding: ScannerFinding) -> str:
     return "\n".join(lines)
 
 
+def _format_code_context_section(finding: ScannerFinding) -> Optional[str]:
+    """Render the source lines around the finding, or None when there are none to show.
+
+    Lines are numbered and the finding's own span is marked with `>`. Both are
+    load-bearing rather than decorative: the numbers are what let a model refer
+    to a specific line, and the marker is what distinguishes the reported line
+    from the context around it - without it a twenty-line window buries the one
+    line the finding is actually about.
+
+    Returns None rather than a placeholder string when no context is available,
+    so a finding with no readable source (a dependency advisory, a deleted file)
+    produces a prompt byte-identical to the one it produced before this section
+    existed.
+    """
+    context = extract_code_context(
+        finding.file,
+        finding.line_start,
+        finding.line_end,
+        context_lines=get_settings().code_context_lines,
+    )
+    if context is None:
+        return None
+    return _render_code_context(context)
+
+
+def _render_code_context(context: CodeContext) -> str:
+    """Format an already-read window. Split out so it can be tested without touching disk."""
+    focus = (
+        f"line {context.focus_start}"
+        if context.focus_start == context.focus_end
+        else f"lines {context.focus_start}-{context.focus_end}"
+    )
+    header = (
+        f"Source context ({context.file_path}, showing lines "
+        f"{context.start_line}-{context.end_line}; the finding is at {focus}, marked with >):"
+    )
+    width = len(str(context.end_line))
+    body = [
+        f"{'>' if context.focus_start <= number <= context.focus_end else ' '} "
+        f"{str(number).rjust(width)} | {text}"
+        for number, text in enumerate(context.lines, start=context.start_line)
+    ]
+    return "\n".join([header, *body])
+
+
 def _format_repository_context_section(repository_context: RepositoryContext) -> Optional[str]:
     if not repository_context.summary:
         return None
@@ -158,6 +205,10 @@ def build_evidence_block(
     contract are each agent's own concern.
     """
     sections = [_format_finding_section(finding)]
+
+    code_context_section = _format_code_context_section(finding)
+    if code_context_section is not None:
+        sections.append(code_context_section)
 
     repository_context_section = _format_repository_context_section(repository_context)
     if repository_context_section is not None:

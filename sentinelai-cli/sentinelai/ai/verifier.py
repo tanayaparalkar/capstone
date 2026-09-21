@@ -66,9 +66,13 @@ Never returns UNVERIFIED - that state means "verification wasn't
 attempted," a decision ai/pipeline.py makes by not calling this
 function at all, not a conclusion this function itself would reach.
 """
+import logging
+
 from sentinelai.contracts import ScannerFinding, VerificationStatus
 
 from .llm_response import LLMResponse
+
+logger = logging.getLogger("sentinelai")
 
 _GENERIC_CATEGORY_TERMS = {
     "injection",
@@ -129,6 +133,22 @@ def _distinguishing_terms(normalized_category: str) -> list[str]:
 
 
 def verify_finding(finding: ScannerFinding, llm_response: LLMResponse) -> VerificationStatus:
+    """Public entry point. The deterministic check itself is unchanged, in _verify_finding below.
+
+    Split only so the verdict can be recorded once rather than at each of the
+    five exits; the logic, its ordering and its return values are untouched.
+    """
+    status = _verify_finding(finding, llm_response)
+    logger.debug(
+        "verifier: finding_id=%s category=%s verdict=%s",
+        finding.finding_id,
+        finding.category,
+        status.value,
+    )
+    return status
+
+
+def _verify_finding(finding: ScannerFinding, llm_response: LLMResponse) -> VerificationStatus:
     if not finding.raw_evidence:
         return VerificationStatus.INSUFFICIENT_EVIDENCE
 

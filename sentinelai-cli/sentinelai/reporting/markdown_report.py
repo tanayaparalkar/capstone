@@ -26,9 +26,11 @@ from typing import Optional
 from ..contracts import AIEnrichedFinding, ScanResult, ScannerFinding
 from ..core import build_ai_lookup, build_correlation_lookup, format_location
 from ..statistics import ScanStatistics
+from .models import PatchApplicationReport
+from .patch_section import ATTEMPT_COLUMNS, attempt_rows, mode_notice, summary_rows
 
 
-def to_markdown(result: ScanResult, statistics: ScanStatistics) -> str:
+def to_markdown(result: ScanResult, statistics: ScanStatistics, patch_application: Optional[PatchApplicationReport] = None) -> str:
     scanner_findings = sorted(result.scanner_findings, key=lambda f: f.finding_id)
     ai_by_id = build_ai_lookup(result)
     corr_by_id = build_correlation_lookup(result)
@@ -45,7 +47,32 @@ def to_markdown(result: ScanResult, statistics: ScanStatistics) -> str:
     else:
         sections.append("## Findings\n\nNo findings were reported for this scan.")
 
+    # Omitted entirely when patching was not requested: a "not requested" block
+    # would appear in every report ever generated without --apply-patches.
+    if patch_application is not None:
+        sections.append(_patch_application(patch_application))
+
     return "\n\n".join(sections) + "\n"
+
+
+def _patch_application(report: PatchApplicationReport) -> str:
+    heading = "## Patch Application" + (" - DRY RUN" if report.dry_run else "")
+    lines = [heading, "", f"**{mode_notice(report)}.**", "", "| Metric | Count |", "| --- | ---: |"]
+    lines += [f"| {label} | {count} |" for label, count in summary_rows(report)]
+
+    rows = attempt_rows(report)
+    if rows:
+        lines += ["", "| " + " | ".join(ATTEMPT_COLUMNS) + " |",
+                  "| " + " | ".join("---" for _ in ATTEMPT_COLUMNS) + " |"]
+        lines += ["| " + " | ".join(_escape_cell(cell) for cell in row) + " |" for row in rows]
+    else:
+        lines += ["", "No findings were considered for patch application."]
+    return "\n".join(lines)
+
+
+def _escape_cell(value: str) -> str:
+    """Pipes would otherwise split a cell; detail text is scanner/LLM-sourced."""
+    return value.replace("|", "\\|").replace("\n", " ")
 
 
 def _executive_summary(result: ScanResult, stats: ScanStatistics) -> str:

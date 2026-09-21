@@ -1,0 +1,176 @@
+name: SentinelAI AI Enrichment Validation
+
+# Manual only, and deliberately so.
+#
+# Why this cannot be scheduled
+# ----------------------------
+# SentinelAI's AI layer runs entirely against a local Ollama server - no API
+# keys, no hosted inference, by design. A GitHub-hosted runner has no GPU and
+# 4 CPU cores, so llama3.1:8b generates at a small fraction of the speed the
+# project's own measurements were taken at (6-10 s per agent call on Apple
+# silicon). The pipeline issues three generation calls per correlated finding,
+# and the benchmark fixture produces 13 of them - 39 calls. On CPU that is
+# plausibly an hour or more, against a 6-hour job ceiling and with the 4.7 GB
+# model pulled fresh on every run.
+#
+# Running that nightly would burn hours to re-learn something the deterministic
+# tests already cover. So it is dispatch-only, and `max_findings` defaults to 1
+# so a routine run proves the path works end to end rather than re-measuring it.
+#
+# What this validates that nothing else does
+# ------------------------------------------
+# 310 AI tests already run in ci.yml, but every one of them stubs the model.
+# The single test that would exercise a real one
+# (test_performance_basic.py::test_ai_enriched_scan_completes_within_budget) is
+# permanently skipped by design. So the real retrieval -> generation ->
+# synthesis -> verification path is exercised nowhere, in CI or locally, unless
+# a human runs it. This workflow is that human action, made repeatable.
+#
+# For the full 13-finding fixture at documented speeds, point `runner` at a
+# self-hosted machine with a GPU. The steps are identical.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label. ubuntu-latest is CPU-only; use a self-hosted GPU label for the full fixture."
+        required: false
+        default: "ubuntu-latest"
+      llm_model:
+        description: "Ollama generation model (the documented default is llama3.1:8b)."
+        required: false
+        default: "llama3.1:8b"
+      embedding_model:
+        description: "Ollama embedding model. Must be a dedicated embedding model, not the generation one."
+        required: false
+        default: "nomic-embed-text"
+      max_findings:
+        description: "How many correlated findings to enrich. 1 proves the path; raise it only on a GPU runner."
+        required: false
+        default: "1"
+
+permissions:
+  contents: read
+
+jobs:
+  ai-enrichment:
+    name: Real model enrichment (${{ inputs.llm_model }})
+    runs-on: ${{ inputs.runner }}
+    # Generous but bounded: a CPU runner is slow, and a hung model pull should
+    # not consume the 6-hour default ceiling.
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: sentinelai-cli
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: sentinelai-cli/pyproject.toml
+
+      - name: Install SentinelAI CLI
+        run: python -m pip install -e ".[dev]"
+
+      # The core three only. The AI layer runs over findings the core tier
+      # produces; Trivy and OSV are not needed and would add download time.
+      - name: Install core scanners
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          python -m pip install semgrep==1.172.0 bandit==1.9.4
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks && sudo mv gitleaks /usr/local/bin/gitleaks && rm gitleaks.tar.gz
+
+      - name: Install Ollama and start the server
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:11434/api/tags >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://localhost:11434/api/tags >/dev/null || { echo "ollama did not start"; exit 1; }
+          ollama --version
+
+      # Not cached: actions/cache has a 10 GB per-repository limit and these
+      # models are several GB each, so caching them would evict everything else
+      # this repository caches for a workflow that runs on demand.
+      - name: Pull models
+        run: |
+          ollama pull "${{ inputs.llm_model }}"
+          ollama pull "${{ inputs.embedding_model }}"
+          ollama list
+
+      # Drives the production pipeline: real retrieval, three real generation
+      # calls per finding, the deterministic synthesizer, the deterministic
+      # verifier and the confidence scorer. Nothing is stubbed.
+      - name: Enrich findings with the real model
+        env:
+          SENTINELAI_AI_LLM_MODEL: ${{ inputs.llm_model }}
+          SENTINELAI_AI_EMBEDDING_MODEL: ${{ inputs.embedding_model }}
+          SENTINELAI_AI_LOG_LEVEL: DEBUG
+          MAX_FINDINGS: ${{ inputs.max_findings }}
+        run: |
+          python - <<'PY'
+          import json, logging, os, sys, time
+          logging.basicConfig(level=logging.DEBUG, stream=sys.stderr,
+                              format="%(levelname)s %(message)s")
+          from sentinelai.ai.confidence_scorer import score_confidence
+          from sentinelai.ai.factory import create_default_retriever, create_llm_generate_fn
+          from sentinelai.ai.pipeline import enrich_findings
+          from sentinelai.ai.repository_context import from_backend_context
+          from sentinelai.ai.verifier import verify_finding
+          from sentinelai.backend.context_builder import build_repository_context
+          from sentinelai.backend.loader import load_repository
+          from sentinelai.contracts import ScanMode
+          from sentinelai.providers.live_provider import LiveFindingsProvider
+
+          repo = "../sentinelai-manual-test"
+          limit = int(os.environ["MAX_FINDINGS"])
+          result = LiveFindingsProvider().get_scan_result(repo, mode=ScanMode.STANDARD)
+          groups = result.correlated_findings[:limit]
+          canonical = {g.canonical_finding_id for g in groups}
+          findings = [f for f in result.scanner_findings if f.finding_id in canonical]
+
+          started = time.monotonic()
+          enriched = enrich_findings(
+              findings, create_default_retriever(), create_llm_generate_fn(),
+              score_confidence, verify_finding,
+              repository_context=from_backend_context(build_repository_context(load_repository(repo))),
+              correlated_findings=groups,
+          )
+          elapsed = time.monotonic() - started
+
+          # Asserts the contract, never the content: a model's wording varies run
+          # to run, so pinning it would make this workflow flaky by design.
+          assert enriched, "no findings were enriched"
+          for e in enriched:
+              assert e.finding_id in canonical, "enrichment invented a finding"
+              assert e.explanation and e.remediation, "enrichment returned empty narrative"
+              assert 0.0 <= e.confidence_score <= 1.0
+              assert e.verification_status is not None
+
+          summary = {
+              "model": os.environ["SENTINELAI_AI_LLM_MODEL"],
+              "findings_enriched": len(enriched),
+              "seconds": round(elapsed, 1),
+              "seconds_per_finding": round(elapsed / len(enriched), 1),
+              "verification": sorted({e.verification_status.value for e in enriched}),
+              "confidence_min": min(e.confidence_score for e in enriched),
+              "confidence_max": max(e.confidence_score for e in enriched),
+          }
+          json.dump(summary, open("ai-validation.json", "w"), indent=2)
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Upload enrichment summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-validation-summary
+          path: sentinelai-cli/ai-validation.json
+          if-no-files-found: warn

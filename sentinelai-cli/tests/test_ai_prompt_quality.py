@@ -259,6 +259,7 @@ def test_evidence_prompt_gives_a_rule_for_every_schema_field(field):
         "exploit.required_assumptions",
         "remediation.remediation",
         "remediation.patch_suggestion",
+        "remediation.structured_patch",
         "remediation.validation_steps",
     ],
 )

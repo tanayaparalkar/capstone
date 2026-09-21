@@ -16,6 +16,7 @@ directory, so it would still walk .git/node_modules/etc. before
 filtering. os.walk is the only stdlib option that is both 3.9-compatible
 and prunes without wasted traversal.
 """
+import logging
 import os
 from collections import Counter
 from dataclasses import dataclass
@@ -61,6 +62,9 @@ class LanguageInfo:
     extensions: Tuple[str, ...]
 
 
+logger = logging.getLogger("sentinelai")
+
+
 def detect_languages(repository: LoadedRepository) -> List[LanguageInfo]:
     """Walk `repository.absolute_path` and count files by recognized extension."""
     file_counts: Counter = Counter()
@@ -83,4 +87,9 @@ def detect_languages(repository: LoadedRepository) -> List[LanguageInfo]:
         for language, count in file_counts.items()
     ]
     languages.sort(key=lambda info: (-info.file_count, info.name))
+    logger.debug(
+        "language detection: languages=%d names=%s",
+        len(languages),
+        ",".join(language.name for language in languages) or "-",
+    )
     return languages

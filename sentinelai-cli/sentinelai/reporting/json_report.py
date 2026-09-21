@@ -15,10 +15,17 @@ in - a pure presentational reorder, not a change in meaning.
 """
 from ..contracts import ScanResult
 from ..statistics import ScanStatistics
-from .models import REPORT_SCHEMA_VERSION, JSONReport, ReportFindings
+from typing import Optional
+
+from .models import (
+    REPORT_SCHEMA_VERSION,
+    JSONReport,
+    PatchApplicationReport,
+    ReportFindings,
+)
 
 
-def build_json_report(result: ScanResult, statistics: ScanStatistics) -> JSONReport:
+def build_json_report(result: ScanResult, statistics: ScanStatistics, patch_application: Optional[PatchApplicationReport] = None) -> JSONReport:
     return JSONReport(
         schema_version=REPORT_SCHEMA_VERSION,
         repository=result.repository,
@@ -32,9 +39,14 @@ def build_json_report(result: ScanResult, statistics: ScanStatistics) -> JSONRep
             # the same scan regardless of the order scanners ran in.
             correlated=sorted(result.correlated_findings, key=lambda c: c.correlation_id),
         ),
+        # Deliberately a sibling of `findings`, not a member of it: patch
+        # application is a separate deterministic stage, and nesting its outcomes
+        # under a finding would blur which part of the pipeline produced what.
+        patch_application=patch_application,
     )
 
 
-def to_json(result: ScanResult, statistics: ScanStatistics, *, indent: int = 2) -> str:
+def to_json(result: ScanResult, statistics: ScanStatistics, *, indent: int = 2,
+            patch_application: Optional[PatchApplicationReport] = None) -> str:
     """Pretty-printed (indented) JSON by default - this is the human/CI-facing report."""
-    return build_json_report(result, statistics).model_dump_json(indent=indent)
+    return build_json_report(result, statistics, patch_application).model_dump_json(indent=indent)

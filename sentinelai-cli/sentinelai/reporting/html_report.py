@@ -25,18 +25,23 @@ from jinja2 import Environment, FileSystemLoader
 
 from ..contracts import ScanResult
 from ..core import build_ai_lookup, build_correlation_lookup, format_location
+from typing import Optional
+
 from ..statistics import ScanStatistics
+from .models import PatchApplicationReport
+from .patch_section import ATTEMPT_COLUMNS, attempt_rows, mode_notice, summary_rows
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _env = Environment(loader=FileSystemLoader(_TEMPLATE_DIR), autoescape=True)
 
 
-def to_html(result: ScanResult, statistics: ScanStatistics) -> str:
+def to_html(result: ScanResult, statistics: ScanStatistics, patch_application: Optional[PatchApplicationReport] = None) -> str:
     template = _env.get_template("security_report.html.j2")
-    return template.render(**_build_context(result, statistics))
+    return template.render(**_build_context(result, statistics, patch_application))
 
 
-def _build_context(result: ScanResult, stats: ScanStatistics) -> dict:
+def _build_context(result: ScanResult, stats: ScanStatistics,
+                   patch_application: Optional[PatchApplicationReport] = None) -> dict:
     scanner_findings = sorted(result.scanner_findings, key=lambda f: f.finding_id)
     ai_by_id = build_ai_lookup(result)
     corr_by_id = build_correlation_lookup(result)
@@ -68,6 +73,14 @@ def _build_context(result: ScanResult, stats: ScanStatistics) -> dict:
         )
 
     return {
+        # Precomputed here rather than in the template: Jinja should place values,
+        # not derive them, and these come from the one shared helper so HTML,
+        # Markdown and the terminal cannot drift apart.
+        "patch_application": patch_application,
+        "patch_mode_notice": mode_notice(patch_application) if patch_application else "",
+        "patch_summary_rows": summary_rows(patch_application) if patch_application else [],
+        "patch_attempt_columns": ATTEMPT_COLUMNS,
+        "patch_attempt_rows": attempt_rows(patch_application) if patch_application else [],
         "repository": result.repository,
         "scanner_tier": result.metadata.scanner_tier.value,
         "stats": stats,

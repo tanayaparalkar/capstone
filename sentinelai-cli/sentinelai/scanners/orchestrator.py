@@ -44,12 +44,18 @@ No AI, reporting, CLI, or repository-loading logic - and no ScanMode
 logic - lives here, matching every constraint in the frozen architecture
 for this module.
 """
+import logging
 from typing import Iterable, List
 
 from sentinelai.backend.context_builder import RepositoryContext
 from sentinelai.contracts import ScannerFinding
 
+from sentinelai.core.observability import log_duration
+
 from .base import Scanner
+
+
+logger = logging.getLogger("sentinelai")
 
 
 class ScannerOrchestrator:
@@ -58,6 +64,21 @@ class ScannerOrchestrator:
     def run(self, context: RepositoryContext, scanners: Iterable[Scanner]) -> List[ScannerFinding]:
         """Invoke each of `scanners` exactly once, in the given order, and concatenate their findings."""
         findings: List[ScannerFinding] = []
-        for scanner in scanners:
-            findings.extend(scanner.scan(context))
+        selected = list(scanners)
+        logger.info(
+            "scanner orchestration: scanners=%d names=%s",
+            len(selected),
+            ",".join(scanner.__class__.__name__ for scanner in selected) or "-",
+        )
+        for scanner in selected:
+            # Timed per scanner rather than per run: this orchestrator fails
+            # closed on the first error, so without a per-scanner record the log
+            # cannot say which one stopped the scan.
+            with log_duration(
+                "scanner", level=logging.DEBUG, scanner=scanner.__class__.__name__
+            ) as stage:
+                produced = scanner.scan(context)
+                stage["findings"] = len(produced)
+            findings.extend(produced)
+        logger.info("scanner orchestration: produced %d raw findings", len(findings))
         return findings

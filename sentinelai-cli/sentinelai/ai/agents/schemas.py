@@ -39,7 +39,6 @@ defined here: it is part of the AIEnrichedFinding contract that the CLI
 and every renderer consume, and contracts/ is a leaf that must not
 import from ai/. Defining it here would invert that dependency.
 """
-from enum import Enum
 from typing import Annotated, Optional
 
 from pydantic import (
@@ -51,7 +50,7 @@ from pydantic import (
     model_validator,
 )
 
-from sentinelai.contracts import GroundingVerdict
+from sentinelai.contracts import GroundingVerdict, StructuredPatch
 
 # Strips surrounding whitespace, then requires at least one character - so
 # "   " is rejected rather than silently becoming an empty section.
@@ -165,26 +164,6 @@ class ExploitAssessment(BaseModel):
     )
 
 
-class PatchType(str, Enum):
-    UNIFIED_DIFF = "unified_diff"
-    REPLACEMENT_BLOCK = "replacement_block"
-    LINE_REPLACEMENT = "line_replacement"
-
-
-class StructuredPatch(BaseModel):
-    """Machine-applicable code patch specification."""
-
-    model_config = _STRICT
-
-    patch_type: PatchType = Field(
-        ..., description="Format of the patch: unified_diff, replacement_block, line_replacement"
-    )
-    target_file: Optional[str] = Field(None, description="Path to the file to patch")
-    line_start: Optional[int] = Field(None, ge=1, description="First affected line (1-indexed)")
-    line_end: Optional[int] = Field(None, ge=1, description="Last affected line (1-indexed)")
-    patch_content: NonBlankStr = Field(..., description="The actual unified diff or replacement code")
-
-
 class RemediationPlan(BaseModel):
     """Remediation section of LLM call 2 of 3."""
 
@@ -198,12 +177,16 @@ class RemediationPlan(BaseModel):
             "supplied evidence. Can be a unified diff or replacement snippet."
         ),
     )
-    structured_patch: Optional[StructuredPatch] = Field(
-        None,
-        description="Optional structured patch specification for automated machine application.",
-    )
     validation_steps: list[NonBlankStr] = Field(
         default_factory=list, description="How to confirm the fix worked."
+    )
+    structured_patch: Optional[StructuredPatch] = Field(
+        None,
+        description=(
+            "Machine-applicable form of the same fix, when the model can express one. Null "
+            "otherwise, and null is the correct answer whenever a patch cannot be grounded in "
+            "the evidence shown - the same bar patch_suggestion is already held to."
+        ),
     )
 
 

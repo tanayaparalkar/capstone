@@ -240,25 +240,6 @@ def test_cli_scan_with_fix_flag_help():
     assert "--fix" in res.output
 
 
-def test_structured_patch_schema():
-    from sentinelai.ai.agents.schemas import PatchType, RemediationPlan, StructuredPatch
-
-    sp = StructuredPatch(
-        patch_type=PatchType.UNIFIED_DIFF,
-        target_file="app/db.py",
-        line_start=6,
-        line_end=7,
-        patch_content="--- a/app/db.py\n+++ b/app/db.py\n",
-    )
-    plan = RemediationPlan(
-        remediation="Use parameterized queries.",
-        structured_patch=sp,
-    )
-    assert plan.structured_patch is not None
-    assert plan.structured_patch.patch_type == PatchType.UNIFIED_DIFF
-    assert plan.structured_patch.target_file == "app/db.py"
-
-
 def test_atomic_snapshot_and_undo(tmp_path):
     from sentinelai.patcher import (
         apply_patch_atomically,

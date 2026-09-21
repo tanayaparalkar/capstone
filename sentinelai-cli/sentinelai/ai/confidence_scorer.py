@@ -47,10 +47,15 @@ the formula wants it later" would be the same speculation being
 rejected for scanner_reliability above - dropped so the signature
 reflects exactly what this heuristic actually uses.
 """
+import logging
+
 from sentinelai.contracts import ConfidenceLabel, ScannerFinding
 
 from .config import get_settings
 from .retrieval import RetrievedChunk
+
+
+logger = logging.getLogger("sentinelai")
 
 
 def _retrieval_relevance(retrieved_chunks: list[RetrievedChunk]) -> float:
@@ -77,4 +82,11 @@ def score_confidence(
     else:
         label = ConfidenceLabel.LOW
 
+    logger.debug(
+        "confidence: finding_id=%s score=%.3f label=%s signals=%d",
+        finding.finding_id,
+        score,
+        label.value,
+        len(signals),
+    )
     return score, label
