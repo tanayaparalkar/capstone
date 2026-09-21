@@ -23,8 +23,13 @@ configuration lookup the frozen constraints rule out.
 from sentinelai.contracts import ScannerFinding
 
 from ..repository_context import RepositoryContext
+import logging
+
 from .base import Retriever
 from .models import RetrievedChunk
+
+
+logger = logging.getLogger("sentinelai")
 
 
 def _build_query(finding: ScannerFinding, repository_context: RepositoryContext) -> str:
@@ -44,4 +49,15 @@ def retrieve_context(
     top_k: int,
 ) -> list[RetrievedChunk]:
     query = _build_query(finding, repository_context)
-    return retriever.retrieve(query, top_k)
+    chunks = retriever.retrieve(query, top_k)
+    # Counts and the best score only: the query is built from the finding's
+    # message and raw evidence, and logging it would put repository source code
+    # into the log.
+    logger.debug(
+        "kb retrieval: finding_id=%s top_k=%d chunks=%d best_score=%s",
+        finding.finding_id,
+        top_k,
+        len(chunks),
+        f"{max((c.score for c in chunks), default=0.0):.3f}",
+    )
+    return chunks

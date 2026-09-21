@@ -6,6 +6,7 @@ facts about it. Knows nothing about AI, RAG, scanners, the CLI,
 reporting, statistics, or even git-ness/languages/dependencies - those
 are later backend modules that take a LoadedRepository as their input.
 """
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,9 @@ class RepositoryNotFoundError(RepositoryError):
 
 class RepositoryNotADirectoryError(RepositoryError):
     """The given path exists but is not a directory."""
+
+
+logger = logging.getLogger("sentinelai")
 
 
 @dataclass(frozen=True)
@@ -51,4 +55,5 @@ def validate_repository(path: str) -> Path:
 def load_repository(path: str) -> LoadedRepository:
     """Validate `path` and return a LoadedRepository describing it. Raises RepositoryError on invalid input."""
     absolute_path = validate_repository(path)
+    logger.debug("repository loaded: name=%s path=%s", absolute_path.name, absolute_path)
     return LoadedRepository(original_path=Path(path), absolute_path=absolute_path, name=absolute_path.name)

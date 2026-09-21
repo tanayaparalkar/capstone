@@ -60,6 +60,7 @@ from .patching import run_patches
 from .backend.loader import load_repository
 from .contracts import ScanMode, ScannerTier, ScanResult, Severity
 from .core import ExitCode, exceeds_fail_on_threshold, filter_by_severity
+from .core.observability import log_duration
 from .presentation import (
     ScanProgress,
     get_console,
@@ -171,6 +172,16 @@ def _render_structured_content(
     patch_application=None,
 ) -> str:
     """Dispatch to the appropriate report generator - shared by `scan` and `report`."""
+    with log_duration("report generation", format=format):
+        return _render_structured_content_inner(format, result, stats, patch_application)
+
+
+def _render_structured_content_inner(
+    format: str,
+    result: ScanResult,
+    stats: ScanStatistics,
+    patch_application=None,
+) -> str:
     if format == "json":
         return to_json(result, stats, patch_application=patch_application)
     if format == "markdown":

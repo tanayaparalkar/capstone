@@ -21,12 +21,14 @@ No model call. This is downstream of generation: the patches it applies were
 proposed by a model earlier in the pipeline, and every step from here is
 ordinary code.
 """
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from sentinelai.contracts import AIEnrichedFinding
+from sentinelai.core.observability import log_duration
 
 from .applicator import PatchApplicator
 from .exceptions import (
@@ -39,6 +41,9 @@ from .exceptions import (
     ReplacementMismatchError,
     RollbackFailedError,
 )
+
+
+logger = logging.getLogger("sentinelai")
 
 
 class PatchOutcome(str, Enum):
@@ -131,6 +136,7 @@ def run_patches(
     which is what gives both the write-containment check and the backup layout.
     """
     engine = applicator if applicator is not None else PatchApplicator(root=Path(root))
+    logger.info("patch run started: findings=%d dry_run=%s", len(findings), dry_run)
     attempts: List[PatchAttempt] = []
 
     for finding in findings:
@@ -144,18 +150,36 @@ def run_patches(
                     detail="finding carries no structured patch",
                 )
             )
+            logger.debug(
+                "patch skipped: finding_id=%s reason=no-structured-patch", finding.finding_id
+            )
             continue
 
+        logger.debug("patch attempt: finding_id=%s file=%s", finding.finding_id, patch.file)
         attempts.append(_attempt(engine, finding.finding_id, patch, dry_run))
 
-    return PatchRunResult(attempts=tuple(attempts), dry_run=dry_run)
+    result = PatchRunResult(attempts=tuple(attempts), dry_run=dry_run)
+    logger.info(
+        "patch run: mode=%s considered=%d attempted=%d applied=%d skipped=%d failed=%d",
+        "dry-run" if dry_run else "apply",
+        len(result.attempts),
+        result.attempted,
+        len(result.applied),
+        len(result.skipped),
+        len(result.failed),
+    )
+    return result
 
 
 def _attempt(engine: PatchApplicator, finding_id: str, patch, dry_run: bool = False) -> PatchAttempt:
     try:
         engine.apply_with_result(patch, dry_run=dry_run)
     except PatchError as exc:
-        return _classify(finding_id, patch.file, exc)
+        attempt = _classify(finding_id, patch.file, exc)
+        logger.debug(
+            "patch attempt failed: finding_id=%s outcome=%s", finding_id, attempt.outcome.value
+        )
+        return attempt
     except Exception as exc:  # noqa: BLE001 - see below
         # A patch failure must never abort a scan, so an unexpected error from
         # anywhere beneath is recorded rather than propagated. Caught broadly for

@@ -35,6 +35,7 @@ Out of scope by design, and belonging to later phases: backups, snapshots,
 rollback, undo, git integration, CLI wiring, and any repair of malformed
 patches.
 """
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -43,6 +44,8 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from sentinelai.contracts import StructuredPatch
+
+from sentinelai.core.observability import log_duration
 
 from ._filesystem import atomic_replace
 from .backup import BackupManager, BackupRecord
@@ -60,6 +63,8 @@ from .models import PatchValidation
 from .rollback import RollbackManager, RollbackRecord
 from .safety import RepositoryState, RepositoryStatus, inspect_repository
 from .validator import validate_structured_patch
+
+logger = logging.getLogger("sentinelai")
 
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -199,6 +204,14 @@ class PatchApplicator:
         original = self._read(path)
         updated = self.render(patch, original, strategy=strategy)
 
+        logger.debug(
+            "patch apply: file=%s strategy=%s dry_run=%s repository=%s",
+            patch.file,
+            strategy.value,
+            dry_run,
+            repository.state.value,
+        )
+
         if dry_run:
             # Everything above this line is computation: validate, inspect, read,
             # render. Everything below it touches the repository. Returning here
@@ -213,11 +226,20 @@ class PatchApplicator:
             # roll back.
             return PatchApplicationResult(contents=updated, backup=None, repository=repository)
 
+        # Backup and rollback are observed from here rather than from inside
+        # backup.py / rollback.py: those two modules are contractually free of
+        # logging (asserted by tests), and this class is what orchestrates them,
+        # so it is the right place to record that they ran.
         record = self._backups.backup(path) if self._backups is not None else None
+        if record is not None:
+            logger.debug(
+                "patch backup: file=%s already_existed=%s", path, record.already_existed
+            )
 
         try:
-            self._atomic_write(path, updated)
-            self._verify_written(path, updated)
+            with log_duration("patch write", level=logging.DEBUG, file=str(path)):
+                self._atomic_write(path, updated)
+                self._verify_written(path, updated)
         except PatchError as exc:
             # The repository must never be left partially modified. A failed
             # _atomic_write already leaves the target untouched - the rename is
@@ -241,8 +263,12 @@ class PatchApplicator:
         cause is lost.
         """
         if record is None or self._rollback is None:
+            logger.debug("rollback skipped: file=%s reason=no-backup-taken", path)
             return None
-        return self._rollback.restore(path)
+        logger.info("rollback started: file=%s", path)
+        restored = self._rollback.restore(path)
+        logger.info("rollback completed: file=%s backup=%s", path, restored.backup_path)
+        return restored
 
     @staticmethod
     def _verify_written(path: Path, expected: str) -> None:

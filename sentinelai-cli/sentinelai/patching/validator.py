@@ -31,6 +31,7 @@ convenience added here. The '\\' prefix is the "\\ No newline at end of file"
 marker; it is a note about the preceding line and counts toward neither side.
 """
 import ast
+import logging
 import re
 import textwrap
 from typing import List, Optional, Tuple
@@ -38,6 +39,8 @@ from typing import List, Optional, Tuple
 from sentinelai.contracts import StructuredPatch
 
 from .models import PatchIssue, PatchIssueCode, PatchValidation
+
+logger = logging.getLogger("sentinelai")
 
 # Trailing text after the closing @@ is a section heading, which the format
 # permits and which carries no meaning for validation.
@@ -62,6 +65,13 @@ def validate_structured_patch(patch: StructuredPatch) -> PatchValidation:
     if patch.replacement is not None and patch.file.endswith(_PYTHON_SUFFIX):
         issues.extend(validate_python_replacement(patch.replacement).issues)
 
+    # Issue codes only - never the diff, which is generated code.
+    logger.debug(
+        "patch validation: file=%s valid=%s issues=%s",
+        patch.file,
+        not issues,
+        ",".join(issue.code.value for issue in issues) or "-",
+    )
     return PatchValidation(issues=tuple(issues))
 
 

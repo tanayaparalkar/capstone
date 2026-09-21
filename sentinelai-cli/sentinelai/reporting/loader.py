@@ -32,6 +32,7 @@ category as a bad CLI flag - so the CLI maps it to ExitCode.INVALID_INPUT
 alongside argument-validation errors, not a distinct exit code.
 """
 import json
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -41,6 +42,9 @@ from ..contracts import ScanResult
 from ..core.errors import InvalidInputError
 from ..statistics import ScanStatistics, calculate_statistics
 from .models import REPORT_SCHEMA_VERSION, JSONReport, PatchApplicationReport
+
+
+logger = logging.getLogger("sentinelai")
 
 
 class ReportLoadError(InvalidInputError):
@@ -73,6 +77,14 @@ def load_scan_result(path: Path) -> tuple:
     except ValidationError as exc:
         raise ReportLoadError(f"'{path}' does not match the SentinelAI report schema:\n{exc}") from exc
 
+    logger.info(
+        "report loaded: path=%s schema_version=%s scanner=%d ai=%d correlated=%d",
+        path,
+        schema_version,
+        len(report.findings.scanner),
+        len(report.findings.ai_enriched),
+        len(report.findings.correlated),
+    )
     result = ScanResult(
         repository=report.repository,
         metadata=report.scan,

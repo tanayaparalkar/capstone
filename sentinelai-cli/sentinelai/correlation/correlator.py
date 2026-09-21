@@ -57,6 +57,7 @@ outside the tolerance. This is union-find over the pairwise relation,
 which keeps the result independent of the order findings are compared
 in - the property that makes correlation ids stable.
 """
+import logging
 import re
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -67,6 +68,9 @@ from sentinelai.core import SEVERITY_RANK
 _LINE_TOLERANCE = 2
 
 _CWE_PATTERN = re.compile(r"CWE-(\d+)", re.IGNORECASE)
+
+
+logger = logging.getLogger("sentinelai")
 
 
 def _normalize_cwe(raw: Optional[str]) -> Optional[str]:
@@ -245,4 +249,13 @@ def correlate_findings(scanner_findings: Sequence[ScannerFinding]) -> List[Corre
 
     # Number after sorting on stable content fields, never on iteration order.
     groups.sort(key=lambda g: (g.file or "", g.line_start or 0, g.cwe or "", g.canonical_finding_id))
-    return [g.model_copy(update={"correlation_id": f"CORR-{i:03d}"}) for i, g in enumerate(groups, start=1)]
+    numbered = [
+        g.model_copy(update={"correlation_id": f"CORR-{i:03d}"}) for i, g in enumerate(groups, start=1)
+    ]
+    logger.info(
+        "correlation: %d raw findings -> %d groups (%d multi-scanner)",
+        len(scanner_findings),
+        len(numbered),
+        sum(1 for group in numbered if group.is_multi_scanner),
+    )
+    return numbered

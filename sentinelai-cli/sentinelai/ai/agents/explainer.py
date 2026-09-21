@@ -57,11 +57,17 @@ consistently avoided elsewhere (confidence and verification were kept
 as separate files rather than combined into one scoring/ package).
 """
 import json
+import logging
 from typing import Optional, Protocol, Type, TypeVar
 
 from pydantic import BaseModel
 
+from sentinelai.core.observability import log_duration
+
 from ..llm_response import LLMResponse
+
+
+logger = logging.getLogger("sentinelai")
 
 
 class LLMFn(Protocol):
@@ -103,9 +109,14 @@ def run_agent(prompt: str, generate: LLMFn, response_schema: Type[_ModelT]) -> _
     deliberately does not retry them; ai/pipeline.py's per-finding handler is
     what turns whichever exception surfaces into "this finding wasn't enriched."
     """
-    raw_text = generate(prompt, response_schema=response_schema)
-    data = json.loads(raw_text)
-    return response_schema.model_validate(data)
+    # The single seam every agent goes through, so instrumenting it here covers
+    # all three stages without touching any agent. Only the schema name and the
+    # response size are recorded - never the prompt, and never the response body.
+    with log_duration("ai generation", level=logging.DEBUG, agent=response_schema.__name__) as stage:
+        raw_text = generate(prompt, response_schema=response_schema)
+        stage["response_chars"] = len(raw_text)
+        data = json.loads(raw_text)
+        return response_schema.model_validate(data)
 
 
 def explain(prompt: str, generate: LLMFn) -> LLMResponse:

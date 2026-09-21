@@ -41,6 +41,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          # Caches the pip download/wheel directory keyed on pyproject.toml.
+          # This makes the PR job faster, never slower, and changes nothing
+          # about what is installed - the resolved versions still come from
+          # pyproject.toml on every run.
+          cache: pip
+          cache-dependency-path: sentinelai-cli/pyproject.toml
 
       # Dependencies come from pyproject.toml's own [project] and
       # [project.optional-dependencies].dev tables - nothing is
