@@ -378,7 +378,8 @@
 </div>
 {% if patch_application %}
 <section class="patch-application">
-  <h2>Patch Application</h2>
+  <h2>Patch Application{% if patch_application.dry_run %} &mdash; DRY RUN{% endif %}</h2>
+  <p><strong>{{ patch_mode_notice }}.</strong></p>
   <table>
     <thead><tr><th>Metric</th><th>Count</th></tr></thead>
     <tbody>

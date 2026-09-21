@@ -90,6 +90,7 @@ class PatchRunResult:
     """
 
     attempts: Tuple[PatchAttempt, ...] = field(default_factory=tuple)
+    dry_run: bool = False
 
     @property
     def applied(self) -> Tuple[PatchAttempt, ...]:
@@ -121,6 +122,7 @@ def run_patches(
     findings: Sequence[AIEnrichedFinding],
     root: Path,
     applicator: Optional[PatchApplicator] = None,
+    dry_run: bool = False,
 ) -> PatchRunResult:
     """Attempt every finding's structured patch, recording each outcome.
 
@@ -144,14 +146,14 @@ def run_patches(
             )
             continue
 
-        attempts.append(_attempt(engine, finding.finding_id, patch))
+        attempts.append(_attempt(engine, finding.finding_id, patch, dry_run))
 
-    return PatchRunResult(attempts=tuple(attempts))
+    return PatchRunResult(attempts=tuple(attempts), dry_run=dry_run)
 
 
-def _attempt(engine: PatchApplicator, finding_id: str, patch) -> PatchAttempt:
+def _attempt(engine: PatchApplicator, finding_id: str, patch, dry_run: bool = False) -> PatchAttempt:
     try:
-        engine.apply_with_result(patch)
+        engine.apply_with_result(patch, dry_run=dry_run)
     except PatchError as exc:
         return _classify(finding_id, patch.file, exc)
     except Exception as exc:  # noqa: BLE001 - see below
@@ -166,6 +168,11 @@ def _attempt(engine: PatchApplicator, finding_id: str, patch) -> PatchAttempt:
             detail=f"{type(exc).__name__}: {exc}",
         )
 
+    # APPLIED regardless of mode. Execution mode is an orthogonal axis carried by
+    # PatchRunResult.dry_run, not a second meaning folded into this enum, which
+    # enumerates what the apply step did rather than whether it was written.
+    # Renderers surface the mode alongside the table, so an "applied" row is never
+    # shown without it.
     return PatchAttempt(finding_id=finding_id, file=patch.file, outcome=PatchOutcome.APPLIED)
 
 

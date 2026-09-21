@@ -276,6 +276,15 @@ def scan(
             "cannot be verified. Best effort per finding - a patch that fails never stops the scan."
         ),
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=(
+            "With --apply-patches, compute and validate every patch and report what would "
+            "change, without writing to any file. No backup is taken either, since writing one "
+            "would itself modify the repository."
+        ),
+    ),
 ):
     """
     Scan a repository for vulnerabilities.
@@ -454,11 +463,21 @@ def scan(
     # neither validates, backs up, applies nor restores anything. Failures are
     # recorded per finding and never reach the exit code, so --apply-patches
     # cannot turn a completed scan into a failed one.
+    if dry_run and not apply_patches:
+        # Fails fast rather than silently doing nothing, matching how --ai
+        # refuses an incoherent combination instead of guessing.
+        _fail(
+            "--dry-run only applies to patch application; pass --apply-patches as well, "
+            "or drop --dry-run",
+            ExitCode.INVALID_INPUT,
+        )
+
     patch_run = None
     if apply_patches:
-        patch_run = run_patches(result.ai_findings, root=repo_path)
+        patch_run = run_patches(result.ai_findings, root=repo_path, dry_run=dry_run)
         logger.info(
-            "patch application: %d applied, %d skipped, %d failed, %d rolled back",
+            "patch application%s: %d applied, %d skipped, %d failed, %d rolled back",
+            " (dry run - nothing written)" if dry_run else "",
             len(patch_run.applied),
             len(patch_run.skipped),
             len(patch_run.failed),

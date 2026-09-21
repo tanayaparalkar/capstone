@@ -80,6 +80,19 @@ _SUMMARY_FIELDS: Tuple[Tuple[str, str], ...] = (
     ("Unexpected errors", "errors"),
 )
 
+# Execution mode, worded once and shared by every renderer. Outcomes describe
+# what the apply step did; this says whether it was written. An "applied" row
+# must never be displayed without it, so the three text renderers put this
+# immediately adjacent to the heading rather than in a distant footnote.
+DRY_RUN_NOTICE = "DRY RUN - no files were modified"
+APPLIED_NOTICE = "Patches were written to the repository"
+
+
+def mode_notice(report: PatchApplicationReport) -> str:
+    """The one sentence describing this run's execution mode."""
+    return DRY_RUN_NOTICE if report.dry_run else APPLIED_NOTICE
+
+
 ATTEMPT_COLUMNS: Tuple[str, ...] = ("Finding", "File", "Outcome", "Rolled back", "Detail")
 
 

@@ -29,7 +29,7 @@ from typing import Optional
 
 from ..statistics import ScanStatistics
 from .models import PatchApplicationReport
-from .patch_section import ATTEMPT_COLUMNS, attempt_rows, summary_rows
+from .patch_section import ATTEMPT_COLUMNS, attempt_rows, mode_notice, summary_rows
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _env = Environment(loader=FileSystemLoader(_TEMPLATE_DIR), autoescape=True)
@@ -77,6 +77,7 @@ def _build_context(result: ScanResult, stats: ScanStatistics,
         # not derive them, and these come from the one shared helper so HTML,
         # Markdown and the terminal cannot drift apart.
         "patch_application": patch_application,
+        "patch_mode_notice": mode_notice(patch_application) if patch_application else "",
         "patch_summary_rows": summary_rows(patch_application) if patch_application else [],
         "patch_attempt_columns": ATTEMPT_COLUMNS,
         "patch_attempt_rows": attempt_rows(patch_application) if patch_application else [],

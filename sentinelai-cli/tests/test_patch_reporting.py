@@ -31,6 +31,7 @@ from sentinelai.contracts import (
     Severity,
 )
 from sentinelai.patching import PatchAttempt, PatchOutcome, PatchRunResult
+from sentinelai.reporting.models import PatchApplicationReport, PatchApplicationSummary
 from sentinelai.reporting import (
     REPORT_SCHEMA_VERSION,
     build_patch_application_report,
@@ -73,6 +74,19 @@ def _attempt(finding_id, outcome, file="app/db.py", **kw) -> PatchAttempt:
 
 def _run(*attempts) -> PatchRunResult:
     return PatchRunResult(attempts=tuple(attempts))
+
+
+def _render_terminal(run) -> str:
+    """Render the terminal view to a string so it can be asserted like the others."""
+    import io
+
+    from rich.console import Console
+
+    from sentinelai.presentation.patches import render_patch_application
+
+    buffer = io.StringIO()
+    render_patch_application(Console(file=buffer, width=120), build_patch_application_report(run))
+    return buffer.getvalue()
 
 
 def _render_all(run):
@@ -375,3 +389,47 @@ def test_renderers_do_not_reach_the_patch_applicator():
             n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
         }
         assert "PatchApplicator" not in names, f"{module} must not reference PatchApplicator"
+
+
+# --- execution mode is never displayed without its context --------------------------------------------------------
+
+
+@pytest.mark.parametrize("fmt", ["markdown", "html", "terminal"])
+def test_a_dry_run_states_that_nothing_was_written(fmt):
+    """An 'applied' row must never appear without the mode beside it.
+
+    Outcomes describe what the apply step did; the mode says whether it reached
+    disk. Since a dry run reports APPLIED like any other success, the renderers
+    carry the whole burden of keeping that unambiguous - so it is asserted in
+    every format a human reads.
+    """
+    run = PatchRunResult(attempts=(_attempt("SENT-001", PatchOutcome.APPLIED),), dry_run=True)
+    rendered = _render_all(run)[fmt] if fmt != "terminal" else _render_terminal(run)
+
+    assert "DRY RUN" in rendered
+    assert "no files were modified" in rendered
+
+
+@pytest.mark.parametrize("fmt", ["markdown", "html", "terminal"])
+def test_a_real_run_states_that_files_were_written(fmt):
+    run = PatchRunResult(attempts=(_attempt("SENT-001", PatchOutcome.APPLIED),), dry_run=False)
+    rendered = _render_all(run)[fmt] if fmt != "terminal" else _render_terminal(run)
+
+    assert "DRY RUN" not in rendered
+    assert "Patches were written to the repository" in rendered
+
+
+def test_the_mode_wording_is_defined_once():
+    """One source of wording, so the three renderers cannot drift apart."""
+    from sentinelai.reporting.patch_section import DRY_RUN_NOTICE, mode_notice
+
+    dry = PatchApplicationReport(summary=PatchApplicationSummary(), dry_run=True)
+    wet = PatchApplicationReport(summary=PatchApplicationSummary(), dry_run=False)
+
+    assert mode_notice(dry) == DRY_RUN_NOTICE
+    assert mode_notice(wet) != DRY_RUN_NOTICE
+
+
+def test_dry_run_defaults_to_false_for_reports_that_predate_it():
+    """Backward compatibility: an older report loads as a real run, which is what it was."""
+    assert PatchApplicationReport(summary=PatchApplicationSummary()).dry_run is False

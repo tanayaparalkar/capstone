@@ -27,7 +27,7 @@ from ..contracts import AIEnrichedFinding, ScanResult, ScannerFinding
 from ..core import build_ai_lookup, build_correlation_lookup, format_location
 from ..statistics import ScanStatistics
 from .models import PatchApplicationReport
-from .patch_section import ATTEMPT_COLUMNS, attempt_rows, summary_rows
+from .patch_section import ATTEMPT_COLUMNS, attempt_rows, mode_notice, summary_rows
 
 
 def to_markdown(result: ScanResult, statistics: ScanStatistics, patch_application: Optional[PatchApplicationReport] = None) -> str:
@@ -56,7 +56,8 @@ def to_markdown(result: ScanResult, statistics: ScanStatistics, patch_applicatio
 
 
 def _patch_application(report: PatchApplicationReport) -> str:
-    lines = ["## Patch Application", "", "| Metric | Count |", "| --- | ---: |"]
+    heading = "## Patch Application" + (" - DRY RUN" if report.dry_run else "")
+    lines = [heading, "", f"**{mode_notice(report)}.**", "", "| Metric | Count |", "| --- | ---: |"]
     lines += [f"| {label} | {count} |" for label, count in summary_rows(report)]
 
     rows = attempt_rows(report)

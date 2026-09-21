@@ -150,6 +150,7 @@ class PatchApplicator:
         validation: Optional[PatchValidation] = None,
         strategy: PatchStrategy = PatchStrategy.UNIFIED_DIFF,
         target: Optional[Path] = None,
+        dry_run: bool = False,
     ) -> str:
         """Apply `patch` to its target file and return the new contents.
 
@@ -167,7 +168,7 @@ class PatchApplicator:
                 + "; ".join(f"{issue.code.value}: {issue.message}" for issue in verdict.issues)
             )
 
-        return self.apply_with_result(patch, verdict, strategy, target).contents
+        return self.apply_with_result(patch, verdict, strategy, target, dry_run).contents
 
     def apply_with_result(
         self,
@@ -175,6 +176,7 @@ class PatchApplicator:
         validation: Optional[PatchValidation] = None,
         strategy: PatchStrategy = PatchStrategy.UNIFIED_DIFF,
         target: Optional[Path] = None,
+        dry_run: bool = False,
     ) -> "PatchApplicationResult":
         """Apply `patch`, returning the contents together with backup and repository state.
 
@@ -196,6 +198,20 @@ class PatchApplicator:
         repository = self._inspect_repository()
         original = self._read(path)
         updated = self.render(patch, original, strategy=strategy)
+
+        if dry_run:
+            # Everything above this line is computation: validate, inspect, read,
+            # render. Everything below it touches the repository. Returning here
+            # is what makes a dry run a preview rather than a simulation - the
+            # contents reported are the same bytes a real run would write,
+            # produced by the same render() call, not by a parallel code path.
+            #
+            # The backup is skipped deliberately rather than taken "just in
+            # case": writing into .sentinelai/backups/ would itself modify the
+            # repository, which is exactly what a dry run promises not to do.
+            # Nothing is written, so there is nothing to verify and nothing to
+            # roll back.
+            return PatchApplicationResult(contents=updated, backup=None, repository=repository)
 
         record = self._backups.backup(path) if self._backups is not None else None
 

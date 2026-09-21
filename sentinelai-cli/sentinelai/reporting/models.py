@@ -234,6 +234,14 @@ class PatchApplicationReport(BaseModel):
     """
 
     summary: PatchApplicationSummary
+    dry_run: bool = Field(
+        False,
+        description=(
+            "True when this run computed patches without writing them. Carried on the report "
+            "so a saved artifact states for itself whether any file was modified, rather than "
+            "leaving a reader to infer it from the outcome values."
+        ),
+    )
     attempts: list[PatchAttemptReport] = Field(
         default_factory=list, description="One entry per finding considered, in the order processed"
     )
@@ -247,6 +255,7 @@ class PatchApplicationReport(BaseModel):
         """
         return cls(
             summary=PatchApplicationSummary.from_run(run),
+            dry_run=run.dry_run,
             attempts=[PatchAttemptReport.from_attempt(attempt) for attempt in run.attempts],
         )
 

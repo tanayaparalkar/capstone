@@ -31,6 +31,7 @@ from sentinelai.contracts import (
     StructuredPatch,
     VerificationStatus,
 )
+from sentinelai.core.exit_codes import ExitCode
 from sentinelai.main import app
 from sentinelai.patching import (
     PatchApplicator,
@@ -370,3 +371,120 @@ def test_patch_failures_do_not_raise_out_of_the_runner(tmp_path):
     )
 
     assert len(result.failed) == 1  # recorded, not raised
+
+
+# --- dry run ----------------------------------------------------------------------------------------------------
+
+
+def test_dry_run_does_not_modify_the_target(tmp_path):
+    """The whole promise, tested as an outcome: the file is byte-identical afterwards."""
+    target = _file(tmp_path)
+    before = _tree_hash(tmp_path)
+
+    result = run_patches([_finding("SENT-001", _patch_for(target))], root=tmp_path, dry_run=True)
+
+    assert result.attempts[0].outcome is PatchOutcome.APPLIED
+    assert result.dry_run is True
+    assert target.read_text(encoding="utf-8") == ORIGINAL
+    assert _tree_hash(tmp_path) == before
+
+
+def test_dry_run_writes_no_backup(tmp_path):
+    """A backup is a write into the repository, so a dry run must not take one."""
+    target = _file(tmp_path)
+
+    run_patches([_finding("SENT-001", _patch_for(target))], root=tmp_path, dry_run=True)
+
+    assert not (tmp_path / ".sentinelai").exists()
+
+
+def test_dry_run_computes_the_same_bytes_a_real_run_would_write(tmp_path):
+    """A preview is only useful if it previews the real thing - same render(), not a parallel path."""
+    target = _file(tmp_path)
+    previewed = PatchApplicator(root=tmp_path).apply_with_result(
+        _patch_for(target), dry_run=True
+    ).contents
+
+    PatchApplicator(root=tmp_path).apply(_patch_for(target))
+
+    assert previewed == PATCHED == target.read_text(encoding="utf-8")
+
+
+def test_dry_run_still_validates(tmp_path):
+    target = _file(tmp_path)
+    bad = _patch_for(target, diff="--- a/f\n+++ b/f\n@@ -1,9 +1,9 @@\n-a\n+b\n")
+
+    result = run_patches([_finding("SENT-001", bad)], root=tmp_path, dry_run=True)
+
+    assert result.attempts[0].outcome is PatchOutcome.VALIDATION_FAILED
+
+
+def test_dry_run_still_detects_an_inapplicable_patch(tmp_path):
+    target = _file(tmp_path, text="unrelated\ncontent\nentirely\nhere\nnow\nok\n")
+
+    result = run_patches([_finding("SENT-001", _patch_for(target))], root=tmp_path, dry_run=True)
+
+    assert result.attempts[0].outcome is PatchOutcome.NOT_APPLICABLE
+
+
+def test_dry_run_is_repeatable(tmp_path):
+    """Nothing is consumed, so the second run sees the same input as the first."""
+    target = _file(tmp_path)
+    findings = [_finding("SENT-001", _patch_for(target))]
+
+    first = run_patches(findings, root=tmp_path, dry_run=True)
+    second = run_patches(findings, root=tmp_path, dry_run=True)
+
+    assert first.attempts == second.attempts
+    assert target.read_text(encoding="utf-8") == ORIGINAL
+
+
+def test_a_successful_dry_run_is_not_counted_as_a_failure(tmp_path):
+    """Outcome is unchanged by mode; only PatchRunResult.dry_run distinguishes the two."""
+    target = _file(tmp_path)
+    result = run_patches([_finding("SENT-001", _patch_for(target))], root=tmp_path, dry_run=True)
+
+    assert result.failed == ()
+    assert len(result.applied) == 1
+    assert result.dry_run is True
+
+
+def test_a_real_run_is_unaffected_by_the_new_parameter(tmp_path):
+    """Regression: the default path must still write, back up, and report APPLIED."""
+    target = _file(tmp_path)
+
+    result = run_patches([_finding("SENT-001", _patch_for(target))], root=tmp_path)
+
+    assert result.attempts[0].outcome is PatchOutcome.APPLIED
+    assert result.dry_run is False
+    assert target.read_text(encoding="utf-8") == PATCHED
+    assert (tmp_path / ".sentinelai" / "backups" / "app" / "parser.py").is_file()
+
+
+def test_the_report_states_that_nothing_was_written(tmp_path):
+    """A saved artifact must say for itself whether files changed."""
+    from sentinelai.reporting import build_patch_application_report
+
+    target = _file(tmp_path)
+    run = run_patches([_finding("SENT-001", _patch_for(target))], root=tmp_path, dry_run=True)
+
+    report = build_patch_application_report(run)
+
+    assert report.dry_run is True
+    assert report.summary.applied == 1
+    assert report.attempts[0].outcome == "applied"
+
+
+def test_dry_run_requires_apply_patches():
+    """Fails fast rather than silently doing nothing."""
+    result = CliRunner().invoke(app, ["scan", ".", "--dry-run"])
+
+    assert result.exit_code == ExitCode.INVALID_INPUT
+    assert "--apply-patches" in result.stderr
+
+
+def test_dry_run_flag_is_documented():
+    result = CliRunner().invoke(app, ["scan", "--help"])
+
+    assert result.exit_code == 0
+    assert "--dry-run" in result.stdout

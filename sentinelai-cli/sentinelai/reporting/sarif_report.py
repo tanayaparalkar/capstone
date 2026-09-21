@@ -42,13 +42,15 @@ finding identifier - this lets SARIF consumers (e.g. GitHub code
 scanning) track the same finding across repeated scans without
 SentinelAI inventing any new identifier.
 
-Validation note: this generator's output is checked against SARIF
-2.1.0's documented structure (schema/version, tool.driver, rules,
-results, locations, levels) via targeted structural tests in
-tests/test_sarif_report.py, not by validating against the full official
-JSON Schema document - pulling in a JSON Schema validator plus the
-several-thousand-line SARIF schema file was judged not worth the
-dependency weight here. This is a deliberate, documented limitation.
+Validation note: this generator's output is checked two ways. Targeted
+structural tests in tests/test_sarif_report.py assert the fields this
+project depends on (schema/version, tool.driver, rules, results,
+locations, levels), and tests/test_sarif_schema_conformance.py validates
+emitted documents against the official OASIS sarif-schema-2.1.0.json.
+That schema is vendored under tests/data/ and the validator is a dev-only
+dependency, so neither adds weight to the installed package. Conformance
+to the schema is not the same as acceptance by a particular code-scanning
+platform, which remains untested.
 """
 import json
 from typing import Optional

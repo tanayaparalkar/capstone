@@ -16,7 +16,12 @@ from rich.console import Console
 from rich.table import Table
 
 from ..reporting.models import PatchApplicationReport
-from ..reporting.patch_section import ATTEMPT_COLUMNS, attempt_rows, summary_rows
+from ..reporting.patch_section import (
+    ATTEMPT_COLUMNS,
+    attempt_rows,
+    mode_notice,
+    summary_rows,
+)
 
 
 def render_patch_application(console: Console, report: Optional[PatchApplicationReport]) -> None:
@@ -25,7 +30,12 @@ def render_patch_application(console: Console, report: Optional[PatchApplication
         return
 
     console.print()
-    console.print("[bold]Patch Application[/bold]")
+    heading = "Patch Application" + (" - DRY RUN" if report.dry_run else "")
+    console.print(f"[bold]{heading}[/bold]")
+    # Styled to stand out: a reader scanning the table below must not take an
+    # "applied" row as evidence that a file changed.
+    style = "yellow" if report.dry_run else "dim"
+    console.print(f"[{style}]{mode_notice(report)}[/{style}]")
 
     summary = Table(show_header=True, header_style="bold")
     summary.add_column("Metric")
