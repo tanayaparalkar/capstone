@@ -317,3 +317,185 @@ def test_render_finding_detail_missing_optional_fields():
     assert "Exploit Path" not in out
     assert "Impact" not in out
     assert "Remediation" in out
+
+
+# ─── Phase 3: Interactive Narrator & Prompt Tests ────────────────────────────
+
+
+def test_narrator_renders_severity_icon_and_confidence_badge():
+    """Vulnerability card should include severity icon and AI confidence badge."""
+    console = _buffer_console()
+    finding = _scanner_finding()
+    ai = _ai_finding()
+    patch = _make_test_patch()
+    from sentinelai.presentation.narrator import render_vulnerability_narration
+
+    render_vulnerability_narration(console, finding, ai, patch, index=1, total=3)
+    out = _output(console)
+    assert "CRITICAL" in out
+    assert "HIGH" in out  # confidence label
+    assert "95%" in out  # confidence score
+    assert "SQL-INJECTION" in out  # category uppercase in title
+    assert "SENT-001" in out  # finding ID
+    assert "Threat Narrative" in out
+    assert "Recommended Remediation" in out
+
+
+def test_narrator_renders_diff_preview():
+    """Vulnerability card should show diff when patch is available."""
+    console = _buffer_console()
+    finding = _scanner_finding()
+    patch = _make_test_patch()
+    from sentinelai.presentation.narrator import render_vulnerability_narration
+
+    render_vulnerability_narration(console, finding, ai=None, patch=patch, index=1, total=1)
+    out = _output(console)
+    assert "Proposed Code Change" in out
+
+
+def test_narrator_renders_without_ai():
+    """Vulnerability card should degrade gracefully without AI enrichment."""
+    console = _buffer_console()
+    finding = _scanner_finding()
+    from sentinelai.presentation.narrator import render_vulnerability_narration
+
+    render_vulnerability_narration(console, finding, ai=None, patch=None, index=1, total=1)
+    out = _output(console)
+    assert "CRITICAL" in out
+    assert finding.message in out
+
+
+def test_prompt_skip_returns_n(monkeypatch):
+    """[s]kip should return 'n' (same as [n]o)."""
+    from sentinelai.presentation.narrator import prompt_user_for_fix
+
+    monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "s")
+    console = _buffer_console()
+    patch = _make_test_patch()
+    result = prompt_user_for_fix(console, patch)
+    assert result == "n"
+
+
+def test_prompt_dry_run_skips():
+    """Dry run mode should auto-skip without prompting."""
+    from sentinelai.presentation.narrator import prompt_user_for_fix
+
+    console = _buffer_console()
+    patch = _make_test_patch()
+    result = prompt_user_for_fix(console, patch, dry_run=True)
+    assert result == "n"
+    out = _output(console)
+    assert "DRY RUN" in out
+
+
+def test_prompt_auto_yes_approves():
+    """Auto-yes flag should auto-approve without prompting."""
+    from sentinelai.presentation.narrator import prompt_user_for_fix
+
+    console = _buffer_console()
+    patch = _make_test_patch()
+    result = prompt_user_for_fix(console, patch, auto_yes=True)
+    assert result == "y"
+
+
+def test_prompt_all_returns_a(monkeypatch):
+    """[a]ll should return 'a'."""
+    from sentinelai.presentation.narrator import prompt_user_for_fix
+
+    monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "a")
+    console = _buffer_console()
+    patch = _make_test_patch()
+    result = prompt_user_for_fix(console, patch)
+    assert result == "a"
+
+
+def test_prompt_quit_returns_q(monkeypatch):
+    """[q]uit should return 'q'."""
+    from sentinelai.presentation.narrator import prompt_user_for_fix
+
+    monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **kw: "q")
+    console = _buffer_console()
+    patch = _make_test_patch()
+    result = prompt_user_for_fix(console, patch)
+    assert result == "q"
+
+
+def test_remediation_summary_with_timing():
+    """Summary should display session duration when elapsed_seconds is provided."""
+    from sentinelai.presentation.narrator import render_remediation_summary
+    from sentinelai.patcher.models import RemediationSessionSummary
+
+    console = _buffer_console()
+    summary = RemediationSessionSummary(
+        total_findings=5,
+        patches_applied=3,
+        patches_rejected=2,
+        vulnerabilities_avoided=3,
+        modified_files=["app.py", "db.py"],
+        avoided_cwes=["CWE-89 (db.py)", "CWE-502 (app.py)"],
+    )
+    render_remediation_summary(console, summary, elapsed_seconds=125.0)
+    out = _output(console)
+    assert "3" in out  # patches applied
+    assert "2" in out  # patches skipped
+    assert "2m 5s" in out  # elapsed time
+    assert "FIXED" in out  # avoided CWEs
+    assert "Modified Files" in out
+
+
+def test_remediation_summary_no_patches_applied():
+    """Summary should gracefully render when no patches were applied."""
+    from sentinelai.presentation.narrator import render_remediation_summary
+    from sentinelai.patcher.models import RemediationSessionSummary
+
+    console = _buffer_console()
+    summary = RemediationSessionSummary(total_findings=3, patches_rejected=3)
+    render_remediation_summary(console, summary)
+    out = _output(console)
+    assert "No patches were applied" in out
+
+
+def test_details_expansion_renders_ai_data():
+    """The [d]etails expansion should render AI evidence, references, and grounding."""
+    from sentinelai.presentation.narrator import _render_details_expansion
+
+    console = _buffer_console()
+    finding = _scanner_finding()
+    ai = _ai_finding(
+        evidence="SQL concatenation at line 47",
+        references=["https://cwe.mitre.org/data/definitions/89.html"],
+    )
+    _render_details_expansion(console, finding, ai)
+    out = _output(console)
+    assert "Evidence" in out
+    assert "SQL concatenation" in out
+    assert "References" in out
+    assert "cwe.mitre.org" in out
+
+
+def test_details_expansion_without_ai():
+    """The [d]etails expansion should show fallback message without AI enrichment."""
+    from sentinelai.presentation.narrator import _render_details_expansion
+
+    console = _buffer_console()
+    finding = _scanner_finding()
+    _render_details_expansion(console, finding, ai=None)
+    out = _output(console)
+    assert "No AI-enriched analysis available" in out
+
+
+def _make_test_patch():
+    """Helper to create a Patch for testing prompt interactions."""
+    from pathlib import Path
+    from sentinelai.patcher.models import Patch
+
+    return Patch(
+        finding_id="SENT-001",
+        file_path=Path("app/db/queries.py"),
+        line_start=47,
+        line_end=47,
+        original_snippet='query = f"SELECT * FROM users WHERE username = \'{username}\'"',
+        replacement_snippet='query = "SELECT * FROM users WHERE username = ?"',
+        diff="--- a/app/db/queries.py\n+++ b/app/db/queries.py\n-query = f\"...\"\n+query = \"...?\"",
+        explanation="Use parameterized queries to prevent SQL injection.",
+    )

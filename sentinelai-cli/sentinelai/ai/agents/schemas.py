@@ -174,7 +174,7 @@ class RemediationPlan(BaseModel):
         None,
         description=(
             "Concrete code change, or null when one cannot responsibly be proposed from the "
-            "supplied evidence. Advisory text only - nothing in this pipeline applies it."
+            "supplied evidence. Can be a unified diff or replacement snippet."
         ),
     )
     validation_steps: list[NonBlankStr] = Field(

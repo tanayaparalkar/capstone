@@ -267,3 +267,79 @@ ScannerFinding                          AIEnrichedFinding
 - Viraj **only consumes** the structured contracts above: it reads a
   `ScanResult` from a `FindingsProvider`, joins the two finding lists,
   and renders/exports/summarizes what it's given.
+
+---
+
+## Safe Patch Remediation Engine Contracts
+
+**Location:** `sentinelai/patcher/models.py`
+
+The remediation engine operates over structured, machine-applicable patch specifications, validation states, and closed-loop verification results.
+
+### `Patch`
+
+**Purpose:** Machine-applicable representation of a proposed remediation for a finding.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `finding_id` | `str` | Yes | Foreign key to `ScannerFinding.finding_id` / `AIEnrichedFinding.finding_id`. |
+| `file_path` | `Path` | Yes | Absolute path to the file to modify. |
+| `line_start` | `Optional[int]` | No | 1-indexed first line of code targeted for replacement. |
+| `line_end` | `Optional[int]` | No | 1-indexed last line of code targeted for replacement. |
+| `original_snippet` | `str` | Yes | Exact code snippet before the patch. |
+| `replacement_snippet` | `str` | Yes | Code snippet to replace the original. |
+| `diff` | `str` | Yes | Unified diff format (`--- a/... +++ b/...`) for user presentation. |
+| `explanation` | `str` | Yes | Human-readable explanation of why this fix is safe. |
+| `cwe` | `Optional[str]` | No | CWE ID associated with the vulnerability (e.g., `"CWE-89"`). |
+| `category` | `Optional[str]` | No | Vulnerability category (e.g., `"sql-injection"`). |
+| `rule_id` | `Optional[str]` | No | Rule ID from the originating scanner. |
+| `scanner` | `Optional[str]` | No | Scanner identifier (e.g., `"bandit"`). |
+| `severity` | `Optional[Severity]` | No | Severity level of the finding being fixed. |
+
+### `PatchStatus` Enum
+
+- `APPLIED`: Patch applied to target file and passed pre-flight syntax check.
+- `REJECTED`: Patch was rejected by the user or pre-flight validation.
+- `SKIPPED`: User chose to skip the patch.
+- `FAILED`: Patch application failed (file not found, syntax error, or disk write error).
+- `ROLLED_BACK`: Patch was applied but reverted due to test regression or user undo.
+
+### `VerificationStatus` Enum (Patcher)
+
+- `CONFIRMED_FIXED`: Re-scan confirmed target finding is completely resolved with no new regressions.
+- `UNRESOLVED`: Re-scan shows target finding still present in code.
+- `REGRESSED`: Patch introduced one or more new scanner findings.
+- `SYNTAX_ERROR`: Patch caused an AST syntax error in the target file.
+- `FALLBACK_VERIFIED`: Static verification confirmed replacement snippet present and original removed.
+
+### `MitigatedVulnerability`
+
+**Purpose:** Metrics record representing a successfully verified and mitigated vulnerability.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `finding_id` | `str` | Yes | Finding identifier. |
+| `cwe` | `Optional[str]` | No | CWE identifier (e.g. `"CWE-78"`). |
+| `category` | `Optional[str]` | No | Vulnerability category (e.g. `"command-injection"`). |
+| `file` | `str` | Yes | Target file path. |
+| `rule_id` | `Optional[str]` | No | Original scanner rule ID. |
+| `severity` | `Optional[Severity]` | No | Finding severity. |
+| `verification_status` | `VerificationStatus` | Yes | Result of the post-patch verification. |
+
+### `RemediationSessionSummary`
+
+**Purpose:** Aggregate metrics and audit report produced at the conclusion of an interactive remediation session.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `total_findings` | `int` | `0` | Number of findings reviewed in session. |
+| `patches_applied` | `int` | `0` | Count of patches applied to disk. |
+| `patches_rejected` | `int` | `0` | Count of patches skipped or rejected. |
+| `vulnerabilities_avoided` | `int` | `0` | Confirmed resolved vulnerabilities. |
+| `regressions_detected` | `int` | `0` | Count of patches rolled back due to regressions. |
+| `unresolved_count` | `int` | `0` | Findings still present after patch attempt. |
+| `modified_files` | `List[str]` | `[]` | List of file paths modified. |
+| `avoided_cwes` | `List[str]` | `[]` | Deduplicated list of resolved CWE IDs. |
+| `mitigated_findings` | `List[MitigatedVulnerability]` | `[]` | Detailed list of mitigated vulnerabilities. |
+| `static_analysis_clean` | `bool` | `True` | True if rescan detected no remaining issues. |
+
