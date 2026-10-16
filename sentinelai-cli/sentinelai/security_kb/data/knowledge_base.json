@@ -29,11 +29,11 @@
   {
     "id": "KB-VULNERABLE-DEPENDENCY-001",
     "category": "vulnerable-dependency",
-    "cwe": "CWE-295",
+    "cwe": "CWE-1395",
     "vulnerable_pattern": "A project dependency is pinned to a version with a publicly known vulnerability (e.g. improper certificate validation, remote code execution) that has since been patched upstream.",
     "exploit_condition": "Depends on the specific CVE/advisory - typically exploitable by any party able to interact with the vulnerable dependency's affected code path (e.g. network requests, deserialization, file parsing).",
     "remediation_guidance": "Upgrade the dependency to a patched version and re-run the dependency scan to confirm no other transitively vulnerable packages remain.",
-    "references": ["https://cwe.mitre.org/data/definitions/295.html"]
+    "references": ["https://cwe.mitre.org/data/definitions/1395.html"]
   },
   {
     "id": "KB-WEAK-CRYPTOGRAPHY-001",
