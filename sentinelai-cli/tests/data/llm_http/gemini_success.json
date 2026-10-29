@@ -1,0 +1,39 @@
+{
+  "note": "Hand-authored from the provider's published response schema, not captured from a live call. {{API_KEY}} and {{PROMPT}} in error bodies are substituted at replay time, to prove neither is ever surfaced.",
+  "provider": "gemini",
+  "request": {
+    "method": "POST",
+    "url": "https://us-central1-aiplatform.googleapis.com/v1/projects/sentinel-test/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json; charset=UTF-8"
+    },
+    "body": {
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "{\"title\": \"SQL injection in find_user\", \"explanation\": \"User input reaches cursor.execute unparameterised.\", \"remediation\": \"Use a parameterised query.\"}"
+              }
+            ]
+          },
+          "finishReason": "STOP",
+          "avgLogprobs": -0.142
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 412,
+        "candidatesTokenCount": 96,
+        "totalTokenCount": 508,
+        "trafficType": "ON_DEMAND"
+      },
+      "modelVersion": "gemini-2.5-flash",
+      "createTime": "2026-10-29T10:00:00.000000Z",
+      "responseId": "AbCdEfGhIjKlMnOp"
+    }
+  }
+}

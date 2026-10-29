@@ -39,6 +39,7 @@ subcommand) additionally prints the real traceback to stderr on an
 unexpected failure; without it, only a one-line message is shown.
 """
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -48,19 +49,22 @@ from typing import Optional
 import typer
 import typer.rich_utils
 from rich.console import Console
+from rich.markup import escape
 
 from . import __version__
 from .ai import enrich_findings
-from .ai.config import get_settings
+from .ai.config import PROVIDER_ENV, AIConfigError, get_settings, resolve_config
 from .ai.confidence_scorer import score_confidence
-from .ai.factory import create_default_retriever, create_llm_generate_fn
+from .ai.factory import create_llm_provider, create_retriever_for_scan
+from .ai.prompt_builder import ai_fault, guarded_generate, scan_session
 from .ai.repository_context import from_backend_context
 from .ai.verifier import verify_finding
 from .backend.context_builder import build_repository_context
 from .patching import run_patches
 from .backend.loader import load_repository
-from .contracts import ScanMode, ScannerTier, ScanResult, Severity
+from .contracts import AIConfig, ScanMode, ScannerTier, ScanResult, Severity
 from .core import ExitCode, exceeds_fail_on_threshold, filter_by_severity
+from .core.errors import AIEnrichmentError
 from .core.observability import log_duration
 from .patcher import run_remediation_session
 from .presentation import (
@@ -74,7 +78,9 @@ from .presentation import (
     render_summary,
 )
 from .presentation.patches import render_patch_application
+from .presentation.providers import render_providers
 from .providers import FindingsProvider, LiveFindingsProvider
+from .reporting.provenance import provenance_line
 from .reporting import (
     ReportLoadError,
     build_patch_application_report,
@@ -114,6 +120,9 @@ if not sys.stdout.isatty() and hasattr(typer.rich_utils, "FORCE_TERMINAL"):
 logger = logging.getLogger("sentinelai")
 
 VALID_FORMATS = {"terminal", "json", "markdown", "html", "sarif"}
+# Matches ai/llm_ollama.py's deterministic temperature; the token cap bounds cost per agent call.
+AI_TEMPERATURE = 0.0
+AI_MAX_TOKENS = 2048
 REPORT_FORMATS = {"json", "markdown", "html", "sarif"}  # no "terminal" - report renders persisted formats only
 FAIL_ON_VALUES = {"low", "medium", "high", "critical", "none"}
 
@@ -177,6 +186,18 @@ def _require_ai_configuration() -> None:
         "No API key is required. Omit --ai to run a scanner-only scan.",
         ExitCode.INVALID_INPUT,
     )
+
+
+def _resolve_ai_config(cli_overrides: dict) -> AIConfig:
+    """resolve_config(), with a configuration problem reported as INVALID_INPUT.
+
+    INVALID_INPUT (2), not PROVIDER_ERROR (3): an unknown provider, a bad egress value or a
+    missing API key is CLI misconfiguration the user fixes, not a dependency that failed.
+    """
+    try:
+        return resolve_config(cli_overrides)
+    except AIConfigError as exc:
+        _fail(f"invalid AI configuration: {exc}.", ExitCode.INVALID_INPUT)
 
 
 def _render_structured_content(
@@ -258,6 +279,25 @@ def scan(
         "--no-ai",
         help="Skip AI enrichment even when both model variables are configured, for a fast, "
         "deterministic scanner-only run.",
+    ),
+    ai_provider: Optional[str] = typer.Option(
+        None,
+        "--ai-provider",
+        help="LLM provider: ollama (default, local), groq, gemini or mock. Overrides "
+        "SENTINELAI_AI_PROVIDER. A remote provider also needs --egress allow and its credential "
+        "variable; run `sentinelai providers` to see what each one sends off the machine.",
+    ),
+    ai_model: Optional[str] = typer.Option(
+        None,
+        "--ai-model",
+        help="Model identifier for the chosen provider. Overrides SENTINELAI_AI_MODEL; defaults "
+        "to the provider's default model.",
+    ),
+    egress: Optional[str] = typer.Option(
+        None,
+        "--egress",
+        help="allow or deny (default). Whether code slices may be sent to a remote provider. "
+        "Overrides SENTINELAI_EGRESS.",
     ),
     severity: Optional[str] = typer.Option(
         None,
@@ -397,6 +437,18 @@ def scan(
     # never have enriched anything.
     if ai:
         _require_ai_configuration()
+    ai_flags = {"provider": ai_provider, "model": ai_model, "egress": egress}
+    if no_ai and any(value is not None for value in ai_flags.values()):
+        given = [flag for flag, value in zip(("--ai-provider", "--ai-model", "--egress"), ai_flags.values()) if value is not None]
+        _fail(f"--no-ai cannot be used together with {', '.join(given)}.", ExitCode.INVALID_INPUT)
+    if not no_ai:
+        # Resolved before any scanner runs, for the same reason as --ai above. The defaults
+        # (local ollama, egress deny) need no credentials and cannot fail, so this only stops
+        # a run whose provider settings were explicitly set to something unusable.
+        ai_config = _resolve_ai_config(ai_flags)
+        logger.info(
+            "AI configuration: provider=%s model=%s egress=%s", ai_config.provider, ai_config.model, ai_config.egress
+        )
     # Orthogonal to mode on purpose - --full does not imply --extended, so no
     # existing invocation silently acquires dependency scanning.
     tier = ScannerTier.EXTENDED if extended else ScannerTier.CORE
@@ -467,7 +519,9 @@ def scan(
     # auto-detect applies unchanged, which is what keeps every existing
     # invocation - and every benchmark - behaving exactly as before.
     ai_configured = settings.llm_model is not None and settings.embedding_model is not None
-    enrich = False if no_ai else (True if ai else ai_configured)
+    # Choosing a provider (flag or SENTINELAI_AI_PROVIDER) is itself a request for enrichment.
+    provider_chosen = ai_provider is not None or bool(os.environ.get(PROVIDER_ENV, "").strip())
+    enrich = False if no_ai else (ai or ai_configured or provider_chosen)
     if enrich:
         # Rebuilds repository context via the backend rather than threading it through
         # FindingsProvider: LiveFindingsProvider already builds one internally, but
@@ -477,32 +531,51 @@ def scan(
         # detection, dependency/snippet extraction) when AI is configured - accepted
         # rather than changing the provider contract for it.
         logger.info("AI enrichment started: %d findings", len(result.scanner_findings))
-        try:
-            backend_context = build_repository_context(load_repository(str(repo_path)))
-            ai_findings = enrich_findings(
-                result.scanner_findings,
-                create_default_retriever(),
-                create_llm_generate_fn(),
-                score_confidence,
-                verify_finding,
-                repository_context=from_backend_context(backend_context),
-                # Enrich once per correlated issue rather than once per raw hit.
-                correlated_findings=result.correlated_findings,
-            )
-        except Exception as exc:
-            # Same category as a provider failure: something SentinelAI depends on -
-            # the Ollama server, the configured embedding model - failed, not
-            # SentinelAI itself. Without this, the single most likely AI
-            # misconfiguration (a text-generation model set as the embedding model,
-            # which Ollama answers with HTTP 501) reached the user as a raw traceback.
-            # Caught broadly rather than on AIEnrichmentError alone so that failures
-            # from outside the AI layer in this same block - an unreadable repository
-            # path, a missing knowledge base - are reported the same clean way.
-            # --debug still prints the full traceback.
-            logger.error("AI enrichment failed: path=%s error=%s", repo_path, exc)
-            _fail_from_exception("AI enrichment failed", exc, ExitCode.PROVIDER_ERROR, debug)
-        result = result.model_copy(update={"ai_findings": ai_findings})
-        logger.info("AI enrichment completed: %d findings enriched", len(ai_findings))
+        faults = []
+        # The SecretIndex is built here, once, from every scanner finding, before any prompt.
+        with scan_session(result.scanner_findings, ai_config) as session:
+            try:
+                generate = guarded_generate(
+                    create_llm_provider(ai_config), ai_config, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE
+                )
+                backend_context = build_repository_context(load_repository(str(repo_path)))
+                ai_findings = enrich_findings(
+                    result.scanner_findings,
+                    create_retriever_for_scan(),
+                    generate,
+                    score_confidence,
+                    verify_finding,
+                    repository_context=from_backend_context(backend_context),
+                    # Enrich once per correlated issue rather than once per raw hit.
+                    correlated_findings=result.correlated_findings,
+                    on_failure=lambda finding_id, exc: faults.append(ai_fault(finding_id, exc)),
+                )
+            except Exception as exc:
+                # Rule 3: a provider or enrichment failure is an operational fault recorded in
+                # scan metadata, never a finding, and never a failed scan - the findings simply
+                # come back unenriched. The pipeline raises only once every finding has failed,
+                # each already recorded through on_failure, so that summary is not recorded twice.
+                logger.error("AI enrichment failed: path=%s error=%s", repo_path, exc)
+                print_error(f"AI enrichment failed; continuing without it: {exc}")
+                if debug:
+                    print_traceback()
+                if not (faults and isinstance(exc, AIEnrichmentError)):
+                    faults.append(ai_fault(None, exc))
+                ai_findings = []
+        provenance = {
+            "ai_provider": ai_config.provider,
+            "ai_model": ai_config.model,
+            "egress_policy": ai_config.egress,
+            "redaction": session.redaction_report(),
+            "ai_faults": faults,
+        }
+        result = result.model_copy(
+            update={"ai_findings": ai_findings, "metadata": result.metadata.model_copy(update=provenance)}
+        )
+        logger.info(
+            "AI enrichment completed: %d findings enriched (provider=%s model=%s)",
+            len(ai_findings), provenance["ai_provider"], provenance["ai_model"],
+        )
     elif no_ai:
         logger.info("AI enrichment skipped: --no-ai")
     else:
@@ -543,6 +616,7 @@ def scan(
     if format == "terminal":
         if not result.scanner_findings and not result.ai_findings:
             console.print("[bold green]No findings matched your filters.[/bold green]")
+            console.print(escape(provenance_line(result.metadata)))
             raise typer.Exit(code=ExitCode.SUCCESS)
 
         if details:
@@ -569,7 +643,7 @@ def scan(
             )
             return
 
-        render_summary(console, stats)
+        render_summary(console, stats, result.metadata)
         render_findings_table(console, result)
         render_patch_application(console, patch_application)
 
@@ -587,6 +661,18 @@ def scan(
 
     if exceeds_fail_on_threshold(stats, fail_on):
         raise typer.Exit(code=ExitCode.SECURITY_FINDINGS)
+
+
+@app.command()
+def providers() -> None:
+    """
+    List every LLM provider: its default model, whether it runs locally or remotely,
+    its data-retention status, and whether its credentials are set.
+
+    Run this before a scan to see what would leave the machine. Makes no network
+    call and never reads a credential's value.
+    """
+    render_providers(get_console())
 
 
 @app.command()
@@ -641,12 +727,19 @@ def fix(
         extended=extended,
         ai=ai,
         no_ai=no_ai,
+        # Every scan() parameter is passed explicitly: called as a plain function, an
+        # omitted one receives its typer.Option(...) object, which is truthy and not None.
+        ai_provider=None,
+        ai_model=None,
+        egress=None,
         severity=severity,
         fail_on="none",
         format="terminal",
         output=None,
         details=None,
+        apply_patches=False,
         fix=True,
+        interactive=False,
         yes=yes,
         dry_run=dry_run,
     )

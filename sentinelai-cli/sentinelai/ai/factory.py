@@ -99,8 +99,15 @@ from sentinelai.security_kb import KnowledgeBaseEntry, load_knowledge_base
 from .agents.explainer import LLMFn
 from .config import get_settings
 from .embeddings_ollama import make_ollama_embed_fn
+from sentinelai.contracts import AIConfig
+
+from .llm.base import LLMProvider
+from .llm.gemini import GeminiProvider
+from .llm.groq import GroqProvider
+from .llm.mock import MockLLMProvider
+from .llm.ollama import OllamaProvider as LocalOllamaProvider
 from .llm_ollama import OllamaProvider
-from .retrieval import EmbeddingFn, InMemoryRetriever, Retriever
+from .retrieval import EmbeddingFn, InMemoryRetriever, RetrievedChunk, Retriever
 
 
 def create_embedding_fn() -> EmbeddingFn:
@@ -123,6 +130,29 @@ def create_retriever(entries: list[KnowledgeBaseEntry]) -> Retriever:
 def create_default_retriever() -> Retriever:
     """create_retriever() over the bundled KB - the convenience path for the one KB source that exists today."""
     return create_retriever(load_knowledge_base())
+
+
+class _NoRetrieval(Retriever):
+    """Used when no embedding model is configured: prompts carry no KB chunks rather than failing."""
+
+    def retrieve(self, query: str, top_k: int) -> list[RetrievedChunk]:
+        return []
+
+
+def create_retriever_for_scan() -> Retriever:
+    return create_default_retriever() if get_settings().embedding_model else _NoRetrieval()
+
+
+def create_llm_provider(cfg: AIConfig) -> LLMProvider:
+    """The multi-provider LLMProvider for a resolved AIConfig. Raises ProviderError on misconfiguration."""
+    settings = get_settings()
+    if cfg.provider == "ollama":
+        return LocalOllamaProvider(cfg.model, host=settings.llm_host, timeout_s=settings.request_timeout_seconds)
+    if cfg.provider == "groq":
+        return GroqProvider(cfg.model)
+    if cfg.provider == "gemini":
+        return GeminiProvider(cfg.model)
+    return MockLLMProvider()
 
 
 def create_llm_generate_fn() -> LLMFn:

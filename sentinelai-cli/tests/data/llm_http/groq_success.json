@@ -1,0 +1,44 @@
+{
+  "note": "Hand-authored from the provider's published response schema, not captured from a live call. {{API_KEY}} and {{PROMPT}} in error bodies are substituted at replay time, to prove neither is ever surfaced.",
+  "provider": "groq",
+  "request": {
+    "method": "POST",
+    "url": "https://api.groq.com/openai/v1/chat/completions"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "id": "chatcmpl-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b",
+      "object": "chat.completion",
+      "created": 1793268000,
+      "model": "llama-3.3-70b-versatile",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "{\"title\": \"SQL injection in find_user\", \"explanation\": \"User input reaches cursor.execute unparameterised.\", \"remediation\": \"Use a parameterised query.\"}"
+          },
+          "logprobs": null,
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "queue_time": 0.012,
+        "prompt_tokens": 412,
+        "prompt_time": 0.021,
+        "completion_tokens": 96,
+        "completion_time": 0.087,
+        "total_tokens": 508,
+        "total_time": 0.108
+      },
+      "system_fingerprint": "fp_0123456789",
+      "x_groq": {
+        "id": "req_01abcdefghijklmnopqrstuvwx"
+      }
+    }
+  }
+}

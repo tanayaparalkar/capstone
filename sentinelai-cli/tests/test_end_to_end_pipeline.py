@@ -259,8 +259,8 @@ def _run_cli_with_patch(monkeypatch, tmp_path, target, extra_args):
         "sentinelai.main._get_provider", lambda: LiveFindingsProvider(registry=_registry(scanner))
     )
     monkeypatch.setattr("sentinelai.main.enrich_findings", lambda *a, **k: [_enriched(target)])
-    monkeypatch.setattr("sentinelai.main.create_default_retriever", lambda: object())
-    monkeypatch.setattr("sentinelai.main.create_llm_generate_fn", lambda: (lambda *a, **k: ""))
+    monkeypatch.setattr("sentinelai.main.create_retriever_for_scan", lambda: object())
+    monkeypatch.setattr("sentinelai.main.create_llm_provider", lambda cfg: __import__("sentinelai.ai.llm", fromlist=["MockLLMProvider"]).MockLLMProvider())
     output = tmp_path / "report.json"
     result = runner.invoke(
         app, ["scan", str(tmp_path), "--ai", "--format", "json", "--output", str(output), *extra_args]

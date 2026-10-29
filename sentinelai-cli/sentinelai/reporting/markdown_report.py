@@ -28,6 +28,7 @@ from ..core import build_ai_lookup, build_correlation_lookup, format_location
 from ..statistics import ScanStatistics
 from .models import PatchApplicationReport
 from .patch_section import ATTEMPT_COLUMNS, attempt_rows, mode_notice, summary_rows
+from .provenance import provenance_line
 
 
 def to_markdown(result: ScanResult, statistics: ScanStatistics, patch_application: Optional[PatchApplicationReport] = None) -> str:
@@ -37,6 +38,9 @@ def to_markdown(result: ScanResult, statistics: ScanStatistics, patch_applicatio
 
     sections = [
         "# SentinelAI Security Report",
+        # Always present, "AI: not used" included: a reader must be able to tell a
+        # scanner-only run from an enriched one without inferring it.
+        f"*{provenance_line(result.metadata)}*",
         _executive_summary(result, statistics),
         _scan_information(result, statistics),
     ]

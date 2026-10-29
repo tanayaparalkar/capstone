@@ -86,12 +86,12 @@ def test_incomplete_configuration_disables_ai_without_failing(monkeypatch, tmp_p
     monkeypatch.setattr("sentinelai.main.get_settings", lambda: settings)
     # Constructing either AI dependency would mean AI was not skipped.
     monkeypatch.setattr(
-        "sentinelai.main.create_default_retriever",
+        "sentinelai.main.create_retriever_for_scan",
         lambda: (_ for _ in ()).throw(AssertionError("AI must be skipped")),
     )
     monkeypatch.setattr(
-        "sentinelai.main.create_llm_generate_fn",
-        lambda: (_ for _ in ()).throw(AssertionError("AI must be skipped")),
+        "sentinelai.main.create_llm_provider",
+        lambda cfg: (_ for _ in ()).throw(AssertionError("AI must be skipped")),
     )
 
     result = runner.invoke(app, ["scan", str(tmp_path), "--format", "json"])
@@ -189,12 +189,16 @@ def _misconfigure_embedding_model(monkeypatch):
     )
 
 
-def test_cli_reports_the_501_cleanly_and_exits_provider_error(monkeypatch, tmp_path):
+def test_cli_reports_the_501_cleanly_and_completes_scanner_only(monkeypatch, tmp_path):
+    # An enrichment failure is an operational fault: reported, recorded, and never a failed scan.
     _misconfigure_embedding_model(monkeypatch)
 
     result = runner.invoke(app, ["scan", str(tmp_path), "--format", "json"])
 
-    assert result.exit_code == ExitCode.PROVIDER_ERROR
+    assert result.exit_code == ExitCode.SUCCESS
+    report = json.loads(result.stdout)
+    assert report["findings"]["ai_enriched"] == []
+    assert [fault["kind"] for fault in report["scan"]["ai_faults"]] == ["AIEnrichmentError"]
     stderr = _flat(result.stderr)
     assert "AI enrichment failed" in stderr
     assert "does not support embeddings" in stderr
@@ -207,5 +211,5 @@ def test_debug_flag_still_shows_the_traceback(monkeypatch, tmp_path):
 
     result = runner.invoke(app, ["--debug", "scan", str(tmp_path), "--format", "json"])
 
-    assert result.exit_code == ExitCode.PROVIDER_ERROR
+    assert result.exit_code == ExitCode.SUCCESS
     assert "Traceback" in result.stderr

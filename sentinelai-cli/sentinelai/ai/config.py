@@ -75,15 +75,42 @@ pyproject.toml's [project.dependencies] deliberately.
 get_settings() is a lazy singleton, mirroring
 presentation/console.py's get_console(): built once from the
 environment on first call, cached for the life of the process.
+
+resolve_config() is separate from AISettings and from that singleton.
+It produces the multi-provider AIConfig (contracts/ai.py) from three
+sources, highest first: CLI flag, environment variable, default. It
+reads the environment on every call rather than caching, because a
+remote provider has to be opted into explicitly *for this run*, and a
+cached answer from earlier in the process is not that.
+
+    provider  --ai-provider  SENTINELAI_AI_PROVIDER  ollama
+    model     --ai-model     SENTINELAI_AI_MODEL     the provider's default model
+    egress    --egress       SENTINELAI_EGRESS       deny
+
+The defaults are local and closed: a first run with nothing configured
+never sends code off the machine. Choosing a remote provider is refused
+here, before anything runs, unless egress is "allow" and every
+credential variable the provider needs is present - so a remote run is
+always the result of the user saying so, never of a fallback.
+Credential variables are checked for presence only; their values are
+never read into AIConfig, logged, or echoed in an error.
 """
 import logging
 import os
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Optional, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from sentinelai.backend.code_context import DEFAULT_CONTEXT_LINES
+from sentinelai.contracts import AIConfig
+
+from .llm.base import LLMProvider
+from .llm.gemini import CREDENTIALS_ENV, PROJECT_ENV, GeminiProvider
+from .llm.groq import API_KEY_ENV, GroqProvider
+from .llm.mock import MockLLMProvider
+from .llm.ollama import OllamaProvider
 
 _ENV_PREFIX = "SENTINELAI_AI_"
 
@@ -245,3 +272,104 @@ def get_settings() -> AISettings:
         _settings = _settings_from_env()
         logging.getLogger("sentinelai").setLevel(_settings.log_level.value)
     return _settings
+
+
+PROVIDER_ENV = "SENTINELAI_AI_PROVIDER"
+MODEL_ENV = "SENTINELAI_AI_MODEL"
+EGRESS_ENV = "SENTINELAI_EGRESS"
+DEFAULT_PROVIDER = "ollama"
+DEFAULT_EGRESS = "deny"
+
+_PROVIDER_NAMES: tuple[str, ...] = get_args(AIConfig.model_fields["provider"].annotation)
+_EGRESS_VALUES: tuple[str, ...] = get_args(AIConfig.model_fields["egress"].annotation)
+_FLAGS = {"provider": "--ai-provider", "model": "--ai-model", "egress": "--egress"}
+_ENVS = {"provider": PROVIDER_ENV, "model": MODEL_ENV, "egress": EGRESS_ENV}
+
+
+@dataclass(frozen=True)
+class ProviderSpec:
+    """A registered LLM provider: what it is called, what it runs by default, and what it needs to run."""
+
+    name: str
+    provider_class: type[LLMProvider]
+    default_model: str
+    required_env: tuple[str, ...]
+
+    @property
+    def is_local(self) -> bool:
+        return self.provider_class.is_local is True
+
+    @property
+    def retains_data(self) -> Optional[bool]:
+        return self.provider_class.retains_data
+
+
+PROVIDERS: dict[str, ProviderSpec] = {
+    spec.name: spec
+    for spec in (
+        ProviderSpec("ollama", OllamaProvider, "llama3.1:8b", ()),
+        ProviderSpec("groq", GroqProvider, "llama-3.3-70b-versatile", (API_KEY_ENV,)),
+        ProviderSpec("gemini", GeminiProvider, "gemini-2.5-flash", (CREDENTIALS_ENV, PROJECT_ENV)),
+        ProviderSpec("mock", MockLLMProvider, "mock-model", ()),
+    )
+}
+assert set(PROVIDERS) == set(_PROVIDER_NAMES), "every AIConfig provider needs exactly one registry entry"
+
+
+class AIConfigError(ValueError):
+    """The requested AI configuration is invalid. The message names each problem and where it came from."""
+
+
+def resolve_config(cli_overrides: dict) -> AIConfig:
+    """Resolve AIConfig from CLI flag > environment variable > default.
+
+    cli_overrides holds "provider", "model" and "egress"; a missing key or a None value means the
+    flag was not given. Raises AIConfigError listing every problem found, so one run reports them all.
+    """
+    unknown = set(cli_overrides) - set(_FLAGS)
+    if unknown:
+        raise ValueError(f"unknown cli_overrides keys: {sorted(unknown)}")
+
+    problems: list[str] = []
+    provider, provider_source = _pick("provider", cli_overrides, DEFAULT_PROVIDER)
+    egress, egress_source = _pick("egress", cli_overrides, DEFAULT_EGRESS)
+    provider, egress = provider.strip().lower(), egress.strip().lower()
+
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        problems.append(f"{provider_source} must be one of {', '.join(PROVIDERS)}; got {provider!r}")
+    if egress not in _EGRESS_VALUES:
+        problems.append(f"{egress_source} must be one of {', '.join(_EGRESS_VALUES)}; got {egress!r}")
+
+    default_model = spec.default_model if spec else ""
+    if provider == "ollama" and os.environ.get(_ENV_PREFIX + "LLM_MODEL", "").strip():
+        default_model = os.environ[_ENV_PREFIX + "LLM_MODEL"]  # pre-multi-provider configuration
+    model, model_source = _pick("model", cli_overrides, default_model)
+    model = model.strip()
+    if spec is not None and not model:
+        problems.append(f"{model_source} must not be empty")
+
+    if spec is not None and not spec.is_local:
+        if egress == "deny":
+            problems.append(
+                f"{provider} is a remote provider and sends code off this machine, but egress is deny "
+                f"({egress_source}); pass --egress allow to opt in for this run"
+            )
+        missing = [name for name in spec.required_env if not os.environ.get(name, "").strip()]
+        if missing:
+            problems.append(f"{provider} needs {' and '.join(missing)} set in the environment")
+
+    if problems:
+        raise AIConfigError("; ".join(problems))
+    return AIConfig(provider=provider, model=model, egress=egress)
+
+
+def _pick(field: str, cli_overrides: dict, default: str) -> tuple[str, str]:
+    """The winning value for one field and a label for where it came from, for error messages."""
+    flag_value = cli_overrides.get(field)
+    if flag_value is not None:
+        return flag_value, _FLAGS[field]
+    env_value = os.environ.get(_ENVS[field], "")
+    if env_value.strip():
+        return env_value, _ENVS[field]
+    return default, "default"

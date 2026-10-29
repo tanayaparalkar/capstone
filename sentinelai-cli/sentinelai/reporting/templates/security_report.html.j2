@@ -121,6 +121,9 @@
       <span><strong>Mode:</strong> {{ stats.scan_mode }}</span>
       <span><strong>Scanners:</strong> {{ scanner_tier }}</span>
       <span><strong>Timestamp:</strong> {{ stats.timestamp.isoformat() }}</span>
+      {# AI provenance beside the scan metadata; "AI: not used" is rendered, never omitted. #}
+      {% for label, value in provenance_items %}<span class="provenance"><strong>{{ label }}:</strong> {{ value }}</span>
+      {% endfor %}
     </div>
   </div>
 </header>

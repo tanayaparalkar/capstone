@@ -1,0 +1,21 @@
+{
+  "note": "Hand-authored from the provider's published response schema, not captured from a live call. {{API_KEY}} and {{PROMPT}} in error bodies are substituted at replay time, to prove neither is ever surfaced.",
+  "provider": "gemini",
+  "request": {
+    "method": "POST",
+    "url": "https://us-central1-aiplatform.googleapis.com/v1/projects/sentinel-test/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
+  },
+  "response": {
+    "status": 403,
+    "headers": {
+      "Content-Type": "application/json; charset=UTF-8"
+    },
+    "body": {
+      "error": {
+        "code": 403,
+        "message": "Permission denied for token {{API_KEY}} on request {{PROMPT}}",
+        "status": "PERMISSION_DENIED"
+      }
+    }
+  }
+}
