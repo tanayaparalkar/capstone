@@ -1,0 +1,87 @@
+"""User authentication service.
+
+Clients send an `Authorization: Bearer <token>` header. Bearer tokens
+expire after TOKEN_TTL seconds; see docs/auth.md for the refresh flow.
+"""
+import base64
+import hashlib
+import hmac
+import os
+import secrets
+from dataclasses import dataclass
+from typing import Optional
+
+import psycopg2
+import requests
+
+TOKEN_TTL = 3600
+MAX_PASSWORD_LENGTH = 128
+PASSWORD_MIN_LENGTH = 12
+SECRET_KEY = os.environ["SECRET_KEY"]
+API_KEY = os.environ.get("API_KEY")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+DATABASE_URL_TEMPLATE = "postgresql://{user}:{password}@{host}:5432/{db}"
+REDIS_URL = "redis://${REDIS_USER}:${REDIS_PASSWORD}@cache:6379/0"
+HEALTHCHECK_URL = "https://status.example.com:443/v1/health"
+EMPTY_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+REQUEST_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+
+
+@dataclass
+class Credentials:
+    username: str
+    password: str
+    token: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+class AuthService:
+    password_hash: str
+    secret: bytes
+
+    def __init__(self, settings):
+        self.secret = settings.secret_key.encode()
+        self.token_url = settings.token_url
+        self.password = None
+
+    def hash_password(self, password: str, salt: bytes) -> str:
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 600_000)
+        return base64.b64encode(salt + digest).decode()
+
+    def verify_password(self, password: str, stored: str) -> bool:
+        raw = base64.b64decode(stored)
+        salt, expected = raw[:16], raw[16:]
+        candidate = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 600_000)
+        return hmac.compare_digest(candidate, expected)
+
+    def issue_token(self, user_id: int) -> str:
+        token = secrets.token_urlsafe(32)
+        self._store(user_id, token)
+        return token
+
+    def login(self, request):
+        password = request.form["password"]
+        api_key = request.headers.get("X-Api-Key")
+        token = request.args.token
+        if not password or len(password) > MAX_PASSWORD_LENGTH:
+            raise ValueError("password must be between 12 and 128 characters")
+        return self.verify_password(password, self.lookup(request.form["username"]))
+
+    def call_upstream(self, token: str) -> dict:
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        response = requests.get(self.token_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    def connect(self, user: str, password: str, host: str):
+        url = DATABASE_URL_TEMPLATE.format(user=user, password=password, host=host, db="app")
+        return psycopg2.connect(url)
+
+
+def rotate_secrets(store, *, dry_run: bool = False) -> int:
+    rotated = 0
+    for name, secret in store.items():
+        if secret.expired:
+            store[name] = secrets.token_hex(32)
+            rotated += 1
+    return rotated

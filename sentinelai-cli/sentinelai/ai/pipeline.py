@@ -172,6 +172,7 @@ def enrich_findings(
     verify_finding: VerifierFn,
     repository_context: Optional[RepositoryContext] = None,
     correlated_findings: Optional[list[CorrelatedFinding]] = None,
+    on_failure: Optional[Callable[[str, Exception], None]] = None,
 ) -> list[AIEnrichedFinding]:
     ctx = repository_context or RepositoryContext()
 
@@ -218,6 +219,8 @@ def enrich_findings(
             # finding is visible to an operator rather than silently absent.
             logger.warning("AI pipeline: enrichment failed on finding_id=%s: %s", finding.finding_id, exc)
             failures.append((finding.finding_id, exc))
+            if on_failure is not None:
+                on_failure(finding.finding_id, exc)
 
     if failures and not results:
         first_finding_id, first_exc = failures[0]

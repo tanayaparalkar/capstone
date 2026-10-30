@@ -13,6 +13,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from .ai import AIFault, RedactionReport
 from .ai_finding import AIEnrichedFinding
 from .correlated_finding import CorrelatedFinding
 from .scanner_finding import ScannerFinding
@@ -62,6 +63,22 @@ class ScanMetadata(BaseModel):
             "Which scanner set produced this result. Defaults to CORE so a report written "
             "before the extended tier existed still loads, and so a finding count can always "
             "be read against the scanner set that produced it."
+        ),
+    )
+    # AI provider provenance. All optional and None by default so reports written
+    # before multi-provider support existed - and scans with AI disabled - still load.
+    ai_provider: Optional[str] = Field(None, description="LLM provider used for AI enrichment, if any.")
+    ai_model: Optional[str] = Field(None, description="Model used for AI enrichment, if any.")
+    egress_policy: Optional[str] = Field(None, description="Egress policy in force for AI enrichment ('allow'/'deny').")
+    redaction: Optional[RedactionReport] = Field(
+        None, description="Summary of secret redaction applied before any prompt was built. Never contains secret values."
+    )
+    ai_faults: list[AIFault] = Field(
+        default_factory=list,
+        description=(
+            "Operational faults from AI enrichment (provider errors, egress refusals). Recorded here, never as "
+            "findings: the affected findings are simply left unenriched. Empty for scanner-only runs and for "
+            "reports written before this field existed."
         ),
     )
 

@@ -61,6 +61,7 @@ from ..contracts import AIEnrichedFinding, ScanResult, ScannerFinding, Severity
 from ..core import build_ai_lookup, build_correlation_lookup, normalize_file_uri
 from ..statistics import ScanStatistics
 from .models import PatchApplicationReport
+from .provenance import sarif_properties
 
 SARIF_SCHEMA_URI = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
 SARIF_VERSION = "2.1.0"
@@ -102,8 +103,10 @@ def build_sarif_report(result: ScanResult, statistics: ScanStatistics, patch_app
                 },
                 "results": results,
                 "properties": {
+                    # Run-level, never per-result: provenance describes the scan, not a finding.
                     "sentinelai": {
                         "scannerTier": result.metadata.scanner_tier.value,
+                        **sarif_properties(result.metadata),
                         "statistics": statistics.model_dump(mode="json"),
                     }
                 },

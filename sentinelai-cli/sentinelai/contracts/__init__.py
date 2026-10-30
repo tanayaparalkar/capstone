@@ -1,4 +1,5 @@
 """Shared Pydantic contracts for the SentinelAI pipeline."""
+from .ai import AIConfig, AIFault, RedactionReport
 from .ai_finding import (
     AIEnrichedFinding,
     ConfidenceLabel,
@@ -12,6 +13,9 @@ from .scan_result import RepositoryInfo, ScanMetadata, ScanMode, ScannerTier, Sc
 from .scanner_finding import ScannerFinding
 
 __all__ = [
+    "AIConfig",
+    "AIFault",
+    "RedactionReport",
     "AIEnrichedFinding",
     "ConfidenceLabel",
     "GroundingVerdict",

@@ -30,6 +30,7 @@ from typing import Optional
 from ..statistics import ScanStatistics
 from .models import PatchApplicationReport
 from .patch_section import ATTEMPT_COLUMNS, attempt_rows, mode_notice, summary_rows
+from .provenance import provenance_items
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _env = Environment(loader=FileSystemLoader(_TEMPLATE_DIR), autoescape=True)
@@ -83,6 +84,7 @@ def _build_context(result: ScanResult, stats: ScanStatistics,
         "patch_attempt_rows": attempt_rows(patch_application) if patch_application else [],
         "repository": result.repository,
         "scanner_tier": result.metadata.scanner_tier.value,
+        "provenance_items": provenance_items(result.metadata),
         "stats": stats,
         "findings": findings,
         "severity_bars": _severity_bars(stats),

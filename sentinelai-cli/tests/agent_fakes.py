@@ -15,6 +15,7 @@ index-based fake would still "pass" if the pipeline called the stages in
 the wrong order, which is precisely the bug these tests exist to catch.
 """
 import json
+from typing import ClassVar, Optional
 
 from sentinelai.ai.agents.schemas import (
     CriticAssessment,
@@ -53,6 +54,9 @@ VALID_CRITIC = {
     ],
     "verdict": "partially_supported",
 }
+
+from sentinelai.ai.agents import critic, evidence_analyst, exploit_remediation_analyst
+from sentinelai.ai.llm import LLMProvider, LLMResponse
 
 _BY_SCHEMA = {
     EvidenceAssessment: VALID_EVIDENCE,
@@ -100,3 +104,30 @@ class RecordingGenerate:
 
 def make_agent_generate(**kwargs) -> RecordingGenerate:
     return RecordingGenerate(**kwargs)
+
+
+# Each agent's prompt opens with its own role text, which identifies the stage - and so
+# the schema - without the response_schema argument LLMProvider.complete() does not take.
+_SCHEMA_BY_ROLE = (
+    (evidence_analyst._ROLE, EvidenceAssessment),
+    (exploit_remediation_analyst._ROLE, ExploitRemediationAssessment),
+    (critic._ROLE, CriticAssessment),
+)
+
+
+class GenerateBackedProvider(LLMProvider):
+    """An LLMProvider over a RecordingGenerate, for driving the composed CLI path (main -> guard -> provider).
+
+    Named "ollama" and local so it satisfies the egress guard under the default configuration.
+    """
+
+    name: ClassVar[str] = "ollama"
+    is_local: ClassVar[bool] = True
+    retains_data: ClassVar[Optional[bool]] = False
+
+    def __init__(self, generate):
+        self.generate = generate
+
+    def complete(self, prompt: str, *, max_tokens: int, temperature: float) -> LLMResponse:
+        schema = next((s for role, s in _SCHEMA_BY_ROLE if prompt.startswith(role)), None)
+        return LLMResponse(text=self.generate(prompt, response_schema=schema), model="fake-model")

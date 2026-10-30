@@ -9,8 +9,8 @@ first time that branch runs in the test suite.
 
 AI settings and the LLM/retriever factories are faked at the same seam
 main.py itself uses (sentinelai.main.get_settings /
-create_default_retriever / create_llm_generate_fn), not patched at a
-lower level: create_default_retriever() and create_llm_generate_fn()
+create_retriever_for_scan / create_llm_provider), not patched at a
+lower level: create_retriever_for_scan() and create_llm_provider()
 would otherwise try to reach a real Ollama server. confidence_scorer.py
 and verifier.py run for real - neither touches the network - so only the
 genuinely external calls are replaced.
@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agent_fakes import make_agent_generate
+from agent_fakes import GenerateBackedProvider, make_agent_generate
 
 from sentinelai.ai.config import AISettings
 from sentinelai.ai.retrieval import RetrievedChunk, Retriever
@@ -60,8 +60,8 @@ def _configure_ai(monkeypatch):
         "sentinelai.main.get_settings",
         lambda: AISettings(llm_model="fake-model", embedding_model="fake-embed-model"),
     )
-    monkeypatch.setattr("sentinelai.main.create_default_retriever", lambda: _EmptyRetriever())
-    monkeypatch.setattr("sentinelai.main.create_llm_generate_fn", lambda: generate)
+    monkeypatch.setattr("sentinelai.main.create_retriever_for_scan", lambda: _EmptyRetriever())
+    monkeypatch.setattr("sentinelai.main.create_llm_provider", lambda cfg: GenerateBackedProvider(generate))
     return generate
 
 

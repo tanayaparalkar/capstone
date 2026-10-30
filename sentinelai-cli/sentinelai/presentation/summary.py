@@ -6,16 +6,20 @@ than recalculating anything itself - the terminal summary and, in a later
 milestone, JSON/Markdown/HTML reports all consume the same statistics
 engine, so the numbers can never drift between output formats.
 """
+from typing import Optional
+
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
-from ..contracts import Severity
+from ..contracts import ScanMetadata, Severity
+from ..reporting.provenance import provenance_line
 from ..statistics import AIEnrichmentStatus, ScanStatistics
 from .console import SEVERITY_STYLE
 
 
-def render_summary(console: Console, stats: ScanStatistics) -> None:
+def render_summary(console: Console, stats: ScanStatistics, metadata: Optional[ScanMetadata] = None) -> None:
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold", no_wrap=True)
     table.add_column()
@@ -61,3 +65,6 @@ def render_summary(console: Console, stats: ScanStatistics) -> None:
             table.add_row("Verification", verif_summary)
 
     console.print(Panel(table, title="Security Summary", title_align="left", border_style="cyan"))
+    if metadata is not None:
+        # Escaped: the model name is user-configured text and must not be read as Rich markup.
+        console.print(escape(provenance_line(metadata)))

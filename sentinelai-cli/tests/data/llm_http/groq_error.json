@@ -1,0 +1,21 @@
+{
+  "note": "Hand-authored from the provider's published response schema, not captured from a live call. {{API_KEY}} and {{PROMPT}} in error bodies are substituted at replay time, to prove neither is ever surfaced.",
+  "provider": "groq",
+  "request": {
+    "method": "POST",
+    "url": "https://api.groq.com/openai/v1/chat/completions"
+  },
+  "response": {
+    "status": 401,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "error": {
+        "message": "Invalid API Key {{API_KEY}} for request: {{PROMPT}}",
+        "type": "invalid_request_error",
+        "code": "invalid_api_key"
+      }
+    }
+  }
+}

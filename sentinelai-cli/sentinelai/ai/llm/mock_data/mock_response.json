@@ -1,0 +1,7 @@
+{
+  "text": "{\"title\": \"Mock finding\", \"explanation\": \"Canned explanation from MockLLMProvider.\", \"remediation\": \"Canned remediation from MockLLMProvider.\"}",
+  "model": "mock-model",
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "latency_ms": null
+}

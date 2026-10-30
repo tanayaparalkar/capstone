@@ -1,0 +1,17 @@
+{
+  "note": "Hand-authored from the provider's published response schema, not captured from a live call. {{API_KEY}} and {{PROMPT}} in error bodies are substituted at replay time, to prove neither is ever surfaced.",
+  "provider": "ollama",
+  "request": {
+    "method": "POST",
+    "url": "http://localhost:11434/api/generate"
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "error": "model 'llama3.1:8b' not found, try pulling it first; prompt was: {{PROMPT}}"
+    }
+  }
+}

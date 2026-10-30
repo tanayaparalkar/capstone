@@ -72,13 +72,43 @@ instruction for a small model even though Pydantic itself would accept
 either: an omitted-vs-present-with-null distinction is exactly the kind
 of small inconsistency a smaller model is more likely to get wrong than
 a larger one.
-"""
-from typing import Optional
 
-from sentinelai.backend.code_context import CodeContext, extract_code_context
-from sentinelai.contracts import ScannerFinding
+The provider path. Every prompt section built from repository text goes
+through the same per-scan ScanSession, so the order is fixed by
+construction:
+
+    1. slice_around()            bounded code context (ai/context)
+    2. redact_slice()            secrets masked, raw evidence included (ai/redaction)
+    3. the prompt                built here, from redacted text only
+    4. assert_safe()             the egress gate (ai/egress)
+    5. provider.complete()       the call (ai/llm)
+    6. redaction_report()        the accumulated RedactionReport, for ScanMetadata
+
+Steps 4 and 5 live in one closure, guarded_generate(): it is the only
+generate callable the pipeline is given, and it has no branch that calls
+complete() without first returning from assert_safe(). The SecretIndex is
+built once, in scan_session(), from the scan's full finding list before
+any prompt exists. Each finding's sections are redacted once and cached,
+so the three agents see identical evidence and the report counts each
+slice once. Outside a scan_session() (direct callers, tests), a throwaway
+session with no GitLeaks index still slices and pattern-redacts: no
+prompt section built here is ever unredacted.
+"""
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Iterator, Optional
+
+from sentinelai.backend.code_context import CodeContext
+from sentinelai.contracts import AIConfig, AIFault, RedactionReport, ScannerFinding
 
 from .config import get_settings
+from .context import CodeSliceError, slice_around
+from .egress import EgressViolation, assert_safe
+from .llm.base import LLMProvider
+from .llm.errors import ProviderError
+from .redaction import SecretIndex
 from .repository_context import RepositoryContext
 from .retrieval import RetrievedChunk
 
@@ -101,7 +131,83 @@ _OUTPUT_FORMAT_INSTRUCTIONS = (
 )
 
 
-def _format_finding_section(finding: ScannerFinding) -> str:
+@dataclass
+class ScanSession:
+    """Per-scan redaction state: one SecretIndex, slice limits, and the running RedactionReport."""
+
+    index: SecretIndex
+    before: int
+    after: int
+    max_chars: int
+    hits: list[str] = field(default_factory=list)
+    slices_scanned: int = 0
+    sections: dict[str, tuple[str, Optional[str]]] = field(default_factory=dict)
+
+    def redact(self, text: str, path: Optional[str], line_start: Optional[int]) -> str:
+        redacted, hits = self.index.redact_slice(text, path or "", line_start or 1)
+        self.hits += hits
+        self.slices_scanned += 1
+        return redacted
+
+    def redaction_report(self) -> RedactionReport:
+        return RedactionReport(
+            secrets_masked=len(self.hits), patterns_hit=sorted(set(self.hits)), slices_scanned=self.slices_scanned
+        )
+
+
+_session: ContextVar[Optional[ScanSession]] = ContextVar("sentinelai_scan_session", default=None)
+
+
+@contextmanager
+def scan_session(findings: list[ScannerFinding], cfg: AIConfig) -> Iterator[ScanSession]:
+    """Build the scan's SecretIndex once, from every finding, before any prompt is constructed."""
+    index = SecretIndex()
+    index.add_from_findings(findings)
+    before = cfg.max_context_lines // 2
+    session = ScanSession(index, before, cfg.max_context_lines - before, cfg.max_context_chars)
+    token = _session.set(session)
+    try:
+        yield session
+    finally:
+        _session.reset(token)
+
+
+def _current_session() -> ScanSession:
+    session = _session.get()
+    if session is not None:
+        return session
+    lines = get_settings().code_context_lines
+    return ScanSession(SecretIndex(), lines, lines, AIConfig.model_fields["max_context_chars"].default)
+
+
+def guarded_generate(provider: LLMProvider, cfg: AIConfig, *, max_tokens: int, temperature: float) -> Callable[..., str]:
+    """The only generate callable the pipeline receives: steps 4 and 5, in that order, with no other path."""
+
+    def generate(prompt: str, response_schema=None) -> str:
+        assert_safe(prompt, cfg, provider)
+        return provider.complete(prompt, max_tokens=max_tokens, temperature=temperature).text
+
+    return generate
+
+
+def ai_fault(finding_id: Optional[str], exc: BaseException) -> AIFault:
+    """An operational fault for ScanMetadata. ProviderError and EgressViolation messages are payload-free by
+    construction; any other exception is recorded by type alone, since its message may quote model output."""
+    safe = isinstance(exc, (ProviderError, EgressViolation))
+    return AIFault(finding_id=finding_id, kind=type(exc).__name__, message=str(exc) if safe else type(exc).__name__)
+
+
+def _redacted_sections(finding: ScannerFinding) -> tuple[str, Optional[str]]:
+    session = _current_session()
+    if finding.finding_id not in session.sections:
+        session.sections[finding.finding_id] = (
+            _format_finding_section(finding, session),
+            _format_code_context_section(finding, session),
+        )
+    return session.sections[finding.finding_id]
+
+
+def _format_finding_section(finding: ScannerFinding, session: ScanSession) -> str:
     lines = [
         f"Finding: {finding.finding_id}",
         f"Category: {finding.category}",
@@ -117,13 +223,14 @@ def _format_finding_section(finding: ScannerFinding) -> str:
         lines.append(f"Location: {location}")
     if finding.cwe:
         lines.append(f"CWE: {finding.cwe}")
-    lines.append(f"Description: {finding.message}")
+    lines.append(f"Description: {session.redact(finding.message, None, None)}")
     if finding.raw_evidence:
-        lines.append(f"Evidence:\n{finding.raw_evidence}")
+        # The evidence's first line is the finding's own line, so GitLeaks positions line up.
+        lines.append(f"Evidence:\n{session.redact(finding.raw_evidence, finding.file, finding.line_start)}")
     return "\n".join(lines)
 
 
-def _format_code_context_section(finding: ScannerFinding) -> Optional[str]:
+def _format_code_context_section(finding: ScannerFinding, session: ScanSession) -> Optional[str]:
     """Render the source lines around the finding, or None when there are none to show.
 
     Lines are numbered and the finding's own span is marked with `>`. Both are
@@ -137,15 +244,19 @@ def _format_code_context_section(finding: ScannerFinding) -> Optional[str]:
     produces a prompt byte-identical to the one it produced before this section
     existed.
     """
-    context = extract_code_context(
-        finding.file,
-        finding.line_start,
-        finding.line_end,
-        context_lines=get_settings().code_context_lines,
-    )
-    if context is None:
+    if not finding.file or finding.line_start is None:
         return None
-    return _render_code_context(context)
+    try:
+        code = slice_around(
+            Path(finding.file), finding.line_start, before=session.before, after=session.after, max_chars=session.max_chars
+        )
+    except (CodeSliceError, ValueError):
+        return None
+    text = session.redact(code.text, finding.file, code.line_start)
+    focus_end = min(max(finding.line_end or finding.line_start, finding.line_start), code.line_end)
+    return _render_code_context(
+        CodeContext(finding.file, code.line_start, code.line_end, finding.line_start, focus_end, tuple(text.split("\n")))
+    )
 
 
 def _render_code_context(context: CodeContext) -> str:
@@ -204,9 +315,8 @@ def build_evidence_block(
     Returns only the evidence sections; the role instruction and the output
     contract are each agent's own concern.
     """
-    sections = [_format_finding_section(finding)]
-
-    code_context_section = _format_code_context_section(finding)
+    finding_section, code_context_section = _redacted_sections(finding)
+    sections = [finding_section]
     if code_context_section is not None:
         sections.append(code_context_section)
 
@@ -226,7 +336,7 @@ def build_prompt(
     repository_context: RepositoryContext,
     retrieved_chunks: list[RetrievedChunk],
 ) -> str:
-    sections = [_TASK_INSTRUCTIONS, _format_finding_section(finding)]
+    sections = [_TASK_INSTRUCTIONS, _redacted_sections(finding)[0]]
 
     repository_context_section = _format_repository_context_section(repository_context)
     if repository_context_section is not None:

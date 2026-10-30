@@ -83,7 +83,7 @@ def _spy_enrichment(monkeypatch):
     Patching enrich_findings alone is not enough. main.py builds the retriever
     and the generate function as *arguments* to that call:
 
-        enrich_findings(findings, create_default_retriever(), create_llm_generate_fn(), ...)
+        enrich_findings(findings, create_retriever_for_scan(), guarded_generate(create_llm_provider(cfg), ...), ...)
 
     so both factories run before the patched function is ever entered. And
     ai/retrieval/in_memory_retriever.py embeds the whole knowledge base eagerly
@@ -104,8 +104,8 @@ def _spy_enrichment(monkeypatch):
     import sentinelai.main as main_module
 
     monkeypatch.setattr(main_module, "enrich_findings", fake_enrich)
-    monkeypatch.setattr(main_module, "create_default_retriever", lambda: object())
-    monkeypatch.setattr(main_module, "create_llm_generate_fn", lambda: (lambda *a, **k: ""))
+    monkeypatch.setattr(main_module, "create_retriever_for_scan", lambda: object())
+    monkeypatch.setattr(main_module, "create_llm_provider", lambda cfg: __import__("sentinelai.ai.llm", fromlist=["MockLLMProvider"]).MockLLMProvider())
     return calls
 
 

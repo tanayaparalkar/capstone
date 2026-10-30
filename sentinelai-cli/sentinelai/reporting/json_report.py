@@ -25,11 +25,22 @@ from .models import (
 )
 
 
+# Redaction pattern names are debugging data: beside a file path, "aws-access-key" tells a
+# reader where a credential lives. Only the count is reported (see reporting/provenance.py).
+_EXCLUDE_PATTERN_NAMES = {"scan": {"redaction": {"patterns_hit"}}}
+
+
 def build_json_report(result: ScanResult, statistics: ScanStatistics, patch_application: Optional[PatchApplicationReport] = None) -> JSONReport:
+    metadata = result.metadata
+    if metadata.redaction is not None and metadata.redaction.patterns_hit:
+        # Emptied on the model too, so a caller serializing it another way cannot leak them.
+        metadata = metadata.model_copy(
+            update={"redaction": metadata.redaction.model_copy(update={"patterns_hit": []})}
+        )
     return JSONReport(
         schema_version=REPORT_SCHEMA_VERSION,
         repository=result.repository,
-        scan=result.metadata,
+        scan=metadata,
         statistics=statistics,
         findings=ReportFindings(
             scanner=sorted(result.scanner_findings, key=lambda f: f.finding_id),
@@ -49,4 +60,5 @@ def build_json_report(result: ScanResult, statistics: ScanStatistics, patch_appl
 def to_json(result: ScanResult, statistics: ScanStatistics, *, indent: int = 2,
             patch_application: Optional[PatchApplicationReport] = None) -> str:
     """Pretty-printed (indented) JSON by default - this is the human/CI-facing report."""
-    return build_json_report(result, statistics, patch_application).model_dump_json(indent=indent)
+    report = build_json_report(result, statistics, patch_application)
+    return report.model_dump_json(indent=indent, exclude=_EXCLUDE_PATTERN_NAMES)

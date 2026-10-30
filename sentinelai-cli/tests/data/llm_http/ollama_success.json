@@ -1,0 +1,27 @@
+{
+  "note": "Hand-authored from the provider's published response schema, not captured from a live call. {{API_KEY}} and {{PROMPT}} in error bodies are substituted at replay time, to prove neither is ever surfaced.",
+  "provider": "ollama",
+  "request": {
+    "method": "POST",
+    "url": "http://localhost:11434/api/generate"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "model": "llama3.1:8b",
+      "created_at": "2026-10-29T10:00:00.000000Z",
+      "response": "{\"title\": \"SQL injection in find_user\", \"explanation\": \"User input reaches cursor.execute unparameterised.\", \"remediation\": \"Use a parameterised query.\"}",
+      "done": true,
+      "done_reason": "stop",
+      "total_duration": 2512345678,
+      "load_duration": 12345678,
+      "prompt_eval_count": 412,
+      "prompt_eval_duration": 312345678,
+      "eval_count": 96,
+      "eval_duration": 2012345678
+    }
+  }
+}
