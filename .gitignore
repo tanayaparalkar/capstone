@@ -32,3 +32,62 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# ── Research artifacts — local working files, never published ───────────
+#
+# Paper drafts, phase-by-phase editing reports, benchmark run outputs and
+# the capstone report. These are research and editing artifacts produced
+# while writing up the project; they are not part of the application and
+# must not reach the remote.
+#
+# Deliberately NOT matched, and verified still tracked after these rules:
+#   README.md, sentinelai-cli/README.md, sentinelai-manual-test/README.md,
+#   sentinelai-cli/docs/CONTRACTS.md, sentinelai-cli/docs/prompts_appendix.md,
+#   all source, tests, fixtures and scanner data files.
+#
+# Checked before adding: no .pdf/.docx/.doc/.tex/.png/.jpg/.svg is tracked
+# on any local or remote branch, so the document and figure rules below
+# cannot hide an existing or incoming project asset. core.ignorecase is
+# true here, so every rule ends in an explicit extension - that is what
+# keeps PHASE_*.md from reaching tests/test_phase5_e2e.py.
+
+# Paper sources and exports, at any depth.
+*.docx
+*.doc
+*.pdf
+*.tex
+*.bbl
+*.aux
+*.synctex.gz
+
+# Research-paper directories. Root-anchored: a "papers" directory inside
+# the application tree would be something else and stays tracked.
+/research papers/
+/research-papers/
+/research_papers/
+
+# Phase-by-phase editing and research-progress reports, at any depth.
+PHASE_*.md
+BENCHMARK_REPORT.md
+FINAL_TECHNICAL_AUDIT.md
+*_EDIT_PLAN.md
+*_EDIT_REPORT.md
+*_CHANGELIST.md
+*_RECONSTRUCTION_REPORT.md
+*_VISUAL_REPORT.md
+*_LANGUAGE_REPORT.md
+
+# The capstone report, in whichever format it is exported to.
+SentinelAI_Capstone_Report.*
+
+# Benchmark run outputs and generated paper figures. Root-anchored so a
+# future benchmark fixture directory inside the package is unaffected.
+/benchmarks/
+/figures/
+
+# Already tracked, so these two rules are INERT until the files are
+# untracked with `git rm --cached`. Listed here so that protection takes
+# effect the moment that happens - .gitignore alone cannot stop Git from
+# publishing a file it is already tracking.
+/PAPER_RESULTS.md
+/POLISH_REPORT.md
