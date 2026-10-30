@@ -5,45 +5,32 @@ Interfaces only - no implementation lives here. Concrete providers
 (Ollama, Groq, Gemini on Vertex AI) subclass LLMProvider in later
 phases; MockLLMProvider (ai/llm/mock.py) is the one every phase
 develops against until then.
-
-Separate from ai/llm_base.py's LLMProvider and ai/llm_response.py's
-LLMResponse, which are left untouched: those are the existing
-Ollama-only generate(prompt) -> str contract and the parsed agent
-output respectively. This LLMResponse is the raw completion plus usage
-metadata, before any parsing.
-
-Every provider declares three privacy-relevant class attributes so a
-caller can decide whether a prompt may leave the machine *before*
-calling complete():
-
-    name          stable identifier, matches AIConfig.provider
-    is_local      True when the prompt never leaves the developer's machine
-    retains_data  whether the provider retains prompts; None means "not
-                  yet verified" and must be treated as retaining (fail
-                  closed) - never filled in with a guess
-
-Synchronous, matching the rest of the pipeline. Failures propagate as
-exceptions; they are operational faults for scan metadata, never
-security findings.
 """
 from abc import ABC, abstractmethod
-from typing import ClassVar, Optional
+from typing import Any, ClassVar, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class LLMResponse(BaseModel):
     """One complete (never partial/streamed) completion, plus whatever usage metadata the provider reported."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     text: str = Field(..., description="Complete text of the completion.")
     model: str = Field(..., description="Model identifier as reported by the provider.")
+    latency_ms: float = Field(0.0, ge=0.0, description="Wall-clock latency of the call in ms.")
     prompt_tokens: Optional[int] = Field(None, ge=0, description="Prompt tokens, if the provider reports them.")
     completion_tokens: Optional[int] = Field(
         None, ge=0, description="Completion tokens, if the provider reports them."
     )
-    latency_ms: Optional[float] = Field(None, ge=0, description="Wall-clock latency of the call, if measured.")
+
+    @field_validator("latency_ms", mode="before")
+    @classmethod
+    def _coerce_latency(cls, v: Any) -> float:
+        if v is None:
+            return 0.0
+        return float(v)
 
 
 class LLMProvider(ABC):
@@ -54,6 +41,50 @@ class LLMProvider(ABC):
     retains_data: ClassVar[Optional[bool]]
 
     @abstractmethod
-    def complete(self, prompt: str, *, max_tokens: int, temperature: float) -> LLMResponse:
-        """Return the complete response for prompt. Raise on failure."""
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        max_tokens: int = 2048,
+        temperature: float = 0.1,
+    ) -> LLMResponse:
+        """Return the complete response for prompt. Raise ProviderError on failure."""
         raise NotImplementedError
+
+
+class ProviderError(Exception):
+    """An LLM provider call failed for an operational reason. Safe to log and record in scan metadata.
+
+    Never includes request bodies or API keys in the message.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        reason: Any,
+        detail: Optional[str] = None,
+        *,
+        status: Optional[int] = None,
+        retry_after: Optional[float] = None,
+    ) -> None:
+        self.provider = provider
+        self.status = status
+        self.retry_after = retry_after
+
+        if hasattr(reason, "value"):
+            self.kind = reason
+            r = str(reason.value)
+            if detail:
+                r = f"{r}: {detail}"
+            self.reason = r
+        else:
+            self.kind = getattr(reason, "kind", None)
+            self.reason = str(reason)
+            if detail:
+                self.reason = f"{self.reason}: {detail}"
+
+        message = f"{provider}: {self.reason}"
+        if status is not None and f"HTTP {status}" not in message:
+            message += f" (HTTP {status})"
+        super().__init__(message)

@@ -93,11 +93,20 @@ class GeminiProvider(LLMProvider):
     def __repr__(self) -> str:
         return f"GeminiProvider(model={self.model!r}, project={self.project!r}, location={self.location!r})"
 
-    def complete(self, prompt: str, *, max_tokens: int, temperature: float) -> LLMResponse:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        max_tokens: int = 2048,
+        temperature: float = 0.1,
+    ) -> LLMResponse:
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"maxOutputTokens": max_tokens, "temperature": temperature},
         }
+        if system:
+            payload["systemInstruction"] = {"parts": [{"text": system}]}
         headers = {"Authorization": f"Bearer {self._access_token()}"}
         body, latency_ms = post_json(self.name, self._url, payload, headers, self._timeout_s)
         text = _candidate_text(body)

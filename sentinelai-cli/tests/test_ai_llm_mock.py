@@ -2,6 +2,7 @@
 import json
 
 from sentinelai.ai.llm import LLMProvider, LLMResponse, MockLLMProvider
+from sentinelai.ai.llm.mock import CallRecord
 
 
 def test_mock_declares_local_non_retaining_provider():
@@ -44,3 +45,25 @@ def test_canned_response_can_come_from_a_supplied_fixture(tmp_path):
     assert response.text == "custom"
     assert response.prompt_tokens == 3
     assert response.completion_tokens is None
+
+
+def test_call_record_backward_compatibility():
+    # 1. String containment searches the prompt
+    record = CallRecord("system instruction", "run cursor.execute on db")
+    assert "cursor.execute" in record
+    assert "nonexistent" not in record
+
+    # 2. String equality remains backward compatible
+    assert record == "run cursor.execute on db"
+    assert record != "something else"
+
+    # 3. System and prompt remain accessible separately
+    assert record.system == "system instruction"
+    assert record.prompt == "run cursor.execute on db"
+    assert record[0] == "system instruction"
+    assert record[1] == "run cursor.execute on db"
+
+    # 4. Existing tuple behavior for non-string containment is preserved
+    record_with_none = CallRecord(None, "prompt text")
+    assert None in record_with_none
+    assert 123 not in record_with_none
