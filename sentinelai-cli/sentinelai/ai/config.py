@@ -85,6 +85,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from sentinelai.backend.code_context import DEFAULT_CONTEXT_LINES
 
+from .local_endpoint import validate_local_endpoint
+
 _ENV_PREFIX = "SENTINELAI_AI_"
 
 
@@ -203,6 +205,22 @@ class AISettings(BaseModel):
     def _normalize_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
 
+    @field_validator("llm_host")
+    @classmethod
+    def _require_local_endpoint(cls, value: str) -> str:
+        """Refuse a host that is not on this machine.
+
+        Checked here because llm_host is the single place the endpoint is
+        configured, so one validator covers both the /api/generate and
+        /api/embed clients that read it. The embedding path is why this
+        matters most: ai/retrieval/context_retrieval.py builds its query
+        from the finding's raw_evidence - repository source - so a remote
+        host would send that source off the machine as a side effect of
+        retrieval. See ai/local_endpoint.py for what the check does and
+        does not guarantee.
+        """
+        return validate_local_endpoint(value)
+
     @model_validator(mode="after")
     def _validate_confidence_thresholds(self) -> "AISettings":
         if self.confidence_medium_threshold >= self.confidence_high_threshold:
@@ -211,6 +229,27 @@ class AISettings(BaseModel):
                 f"(got medium={self.confidence_medium_threshold}, high={self.confidence_high_threshold})"
             )
         return self
+
+
+def ai_models_configured() -> bool:
+    """True when both model variables are present, without building AISettings.
+
+    Exists so a scanner-only run is never refused because of a setting it will
+    never read. The caller needs one fact - "did the user configure AI?" - to
+    decide whether to enrich at all, and answering it by constructing AISettings
+    would also run llm_host's validator, failing a scan that was never going to
+    contact Ollama.
+
+    This does not weaken anything. It is only ever used to decide *whether* to
+    enrich; every path that actually reaches Ollama goes through get_settings()
+    first, which validates in full. The presence test matches what the previous
+    `settings.llm_model is not None` check did exactly, including treating a
+    variable set to the empty string as present.
+    """
+    return (
+        os.environ.get(_ENV_PREFIX + "LLM_MODEL") is not None
+        and os.environ.get(_ENV_PREFIX + "EMBEDDING_MODEL") is not None
+    )
 
 
 def _settings_from_env() -> AISettings:

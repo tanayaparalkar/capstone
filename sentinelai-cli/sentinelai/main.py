@@ -47,11 +47,12 @@ from typing import Optional
 
 import typer
 import typer.rich_utils
+from pydantic import ValidationError
 from rich.console import Console
 
 from . import __version__
 from .ai import enrich_findings
-from .ai.config import get_settings
+from .ai.config import ai_models_configured, get_settings
 from .ai.confidence_scorer import score_confidence
 from .ai.factory import create_default_retriever, create_llm_generate_fn
 from .ai.repository_context import from_backend_context
@@ -146,6 +147,58 @@ def _fail_from_exception(message: str, exc: Exception, code: ExitCode, debug: bo
     raise typer.Exit(code=code)
 
 
+def _ai_settings():
+    """get_settings(), with an unusable SENTINELAI_AI_* value reported as INVALID_INPUT.
+
+    INVALID_INPUT (2) for the same reason _require_ai_configuration() below uses
+    it: a rejected SENTINELAI_AI_LLM_HOST means the command as invoked is not
+    satisfiable, nothing has failed and nothing external has been contacted.
+
+    Without this the pydantic ValidationError propagates out of the command and
+    Typer exits 1 - which is SECURITY_FINDINGS, so a CI gate could not tell a
+    misconfigured host from findings crossing its threshold. Only the first
+    error's message is printed; the full pydantic dump is noise to a user who
+    set one environment variable wrongly.
+    """
+    try:
+        return get_settings()
+    except ValidationError as exc:
+        _fail(_settings_error_message(exc), ExitCode.INVALID_INPUT)
+
+
+def _settings_error_message(exc: ValidationError) -> str:
+    """The first validation error's own message. The full pydantic dump is noise."""
+    errors = exc.errors()
+    detail = errors[0].get("msg", "") if errors else ""
+    text = str(detail) or str(exc)
+    if text.startswith("Value error, "):
+        text = text[len("Value error, "):]
+    return f"invalid AI configuration: {text}"
+
+
+def _ai_decision():
+    """Return (settings, error, models_configured) without refusing a scanner-only run.
+
+    Goes through get_settings() - the same seam main.py uses everywhere else, so
+    injecting settings in a test still governs the decision - but tolerates a
+    failure here rather than exiting, because at this point it is not yet known
+    whether AI will be used at all. A stale SENTINELAI_AI_LLM_HOST must not fail
+    a scan that was never going to contact Ollama.
+
+    When settings cannot be built, the environment is consulted for one fact
+    only: did the user ask for AI? That keeps a genuine misconfiguration
+    reportable - models set plus a bad host still fails - instead of silently
+    degrading to a scanner-only run, while a scan with no AI configured is
+    unaffected. The caller enforces the error before anything is transmitted.
+    """
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        return None, exc, ai_models_configured()
+    configured = settings.llm_model is not None and settings.embedding_model is not None
+    return settings, None, configured
+
+
 def _require_ai_configuration() -> None:
     """Exit with INVALID_INPUT unless both AI model variables are set.
 
@@ -159,7 +212,7 @@ def _require_ai_configuration() -> None:
     Names only the variables that are missing, so a user who has set one of the
     two is not told to set both.
     """
-    settings = get_settings()
+    settings = _ai_settings()
     missing = []
     if settings.llm_model is None:
         missing.append("SENTINELAI_AI_LLM_MODEL")
@@ -461,14 +514,23 @@ def scan(
         "scan retrieved %d scanner findings in %.2fs", len(result.scanner_findings), elapsed
     )
 
-    settings = get_settings()
-    # Three states, one expression: --no-ai always skips; --ai has already been
-    # validated above so it always enriches; with neither flag the pre-existing
-    # auto-detect applies unchanged, which is what keeps every existing
-    # invocation - and every benchmark - behaving exactly as before.
-    ai_configured = settings.llm_model is not None and settings.embedding_model is not None
+    # Three states: --no-ai always skips; --ai has already been validated above
+    # so it always enriches; with neither flag the pre-existing auto-detect
+    # applies unchanged, which is what keeps every existing invocation - and
+    # every benchmark - behaving exactly as before.
+    #
+    # _ai_decision() rather than _ai_settings(): a scanner-only run must not be
+    # refused because of an AI setting it will never read, so a settings failure
+    # is carried here rather than raised. It is enforced immediately below, on
+    # the only branch that can transmit anything.
+    _settings, settings_error, ai_configured = _ai_decision()
     enrich = False if no_ai else (True if ai else ai_configured)
     if enrich:
+        # Enforced before any AI request is built, so nothing is sent on a bad
+        # host. The --ai path has already been through this at
+        # _require_ai_configuration(); the auto-detect path reaches it here.
+        if settings_error is not None:
+            _fail(_settings_error_message(settings_error), ExitCode.INVALID_INPUT)
         # Rebuilds repository context via the backend rather than threading it through
         # FindingsProvider: LiveFindingsProvider already builds one internally, but
         # ScanResult (the frozen FindingsProvider contract) has no field to carry it

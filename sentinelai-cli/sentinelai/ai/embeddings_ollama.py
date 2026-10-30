@@ -113,6 +113,7 @@ import urllib.request
 
 from sentinelai.core.errors import AIEnrichmentError
 
+from .local_endpoint import validate_local_endpoint
 from .ollama_http import MAX_ATTEMPTS, read_with_retry
 from .retrieval import EmbeddingFn
 
@@ -141,8 +142,12 @@ def make_ollama_embed_fn(
     ai/llm_ollama.py's OllamaProvider - one policy, applied identically to both
     Ollama endpoints.
     """
-    if not host:
-        raise ValueError("host must be a non-empty string")
+    # Re-checked here, not only in ai/config.py's validator, so that a caller
+    # constructing this directly - a test, or any future code path that does not
+    # go through AISettings - cannot reach a remote endpoint with the retrieval
+    # query, which carries repository source. RemoteEndpointError subclasses
+    # ValueError, so the previous contract for a bad host is unchanged.
+    validate_local_endpoint(host, setting="host")
     if not model:
         raise ValueError("model must be a non-empty string")
     if timeout <= 0:
