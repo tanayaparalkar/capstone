@@ -50,10 +50,21 @@ class GroqProvider(LLMProvider):
     def __repr__(self) -> str:
         return f"GroqProvider(model={self.model!r})"
 
-    def complete(self, prompt: str, *, max_tokens: int, temperature: float) -> LLMResponse:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        max_tokens: int = 2048,
+        temperature: float = 0.1,
+    ) -> LLMResponse:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "max_completion_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,
