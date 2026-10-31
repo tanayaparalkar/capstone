@@ -1,5 +1,5 @@
 """Shared Pydantic contracts for the SentinelAI pipeline."""
-from .ai import AIConfig, AIFault, RedactionReport
+from .ai import AI_ROLES, AIConfig, AIFault, AIRole, AIRoleProvenance, RedactionReport
 from .ai_finding import (
     AIEnrichedFinding,
     ConfidenceLabel,
@@ -9,12 +9,24 @@ from .ai_finding import (
 )
 from .common import Severity
 from .correlated_finding import CorrelatedFinding, CorrelationRule
-from .scan_result import RepositoryInfo, ScanMetadata, ScanMode, ScannerTier, ScanResult
+from .scan_result import (
+    RepositoryInfo,
+    RetentionStatus,
+    ScanMetadata,
+    ScanMode,
+    ScannerTier,
+    ScanResult,
+    aggregate_retention_status,
+    retention_status_from_provider,
+)
 from .scanner_finding import ScannerFinding
 
 __all__ = [
     "AIConfig",
     "AIFault",
+    "AI_ROLES",
+    "AIRole",
+    "AIRoleProvenance",
     "RedactionReport",
     "AIEnrichedFinding",
     "ConfidenceLabel",
@@ -25,9 +37,12 @@ __all__ = [
     "CorrelatedFinding",
     "CorrelationRule",
     "RepositoryInfo",
+    "RetentionStatus",
     "ScanMetadata",
     "ScanMode",
     "ScannerTier",
     "ScanResult",
     "ScannerFinding",
+    "aggregate_retention_status",
+    "retention_status_from_provider",
 ]

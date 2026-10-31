@@ -70,7 +70,7 @@
   .badge.high { background: var(--color-high); }
   .badge.medium { background: var(--color-medium); }
   .badge.low { background: var(--color-low); }
-  .badge.pending, .badge.unverified, .badge.insufficient_evidence { background: #9ca3af; }
+  .badge.pending, .badge.unavailable, .badge.unverified, .badge.insufficient_evidence { background: #9ca3af; }
   .badge.verified { background: #16a34a; }
   .badge.rejected { background: #dc2626; }
   /* Critic grounding verdicts. `insufficient_evidence` is shared with the
@@ -238,7 +238,8 @@
             <td>{{ item.location }}</td>
             <td><code>{{ item.finding.rule_id }}</code></td>
             <td>
-              {% if item.ai %}<span class="badge {{ item.ai.confidence_label.value }}">{{ item.ai.confidence_label.value|upper }}</span>
+              {% if item.ai and item.ai.confidence_label is not none %}<span class="badge {{ item.ai.confidence_label.value }}">{{ item.ai.confidence_label.value|upper }}</span>
+              {% elif item.ai %}<span class="badge unavailable">UNAVAILABLE</span>
               {% else %}<span class="badge pending">PENDING</span>{% endif %}
             </td>
             <td>
@@ -314,10 +315,14 @@
         {% endif %}
 
         <div class="section-label">Confidence</div>
+        {% if item.ai_confidence_percent is not none and item.ai.confidence_label is not none %}
         <div class="confidence-meter">
           <div class="confidence-track"><div class="confidence-fill" style="width: {{ item.ai_confidence_percent }}%;"></div></div>
           <span>{{ item.ai_confidence_percent }}% &middot; <span class="badge {{ item.ai.confidence_label.value }}">{{ item.ai.confidence_label.value|upper }}</span></span>
         </div>
+        {% else %}
+        <p><span class="badge unavailable">UNAVAILABLE</span></p>
+        {% endif %}
 
         <div class="section-label">Verification</div>
         <p>

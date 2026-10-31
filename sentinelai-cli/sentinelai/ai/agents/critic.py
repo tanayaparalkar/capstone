@@ -41,6 +41,16 @@ _ROLE = (
 
 _RULES = (
     "Rules:\n"
+    "- Independently evaluate the original scanner evidence and repository context first; do not "
+    "simply agree with or rubber-stamp the discovery model's conclusion.\n"
+    "- Evaluate whether the vulnerability claim (interpretation and cited observed evidence) is "
+    "substantiated by the scanner evidence and source context.\n"
+    "- Evaluate whether the exploitability argument (exploit path and impact) logically follows "
+    "from the demonstrated evidence.\n"
+    "- Evaluate whether the proposed remediation, patch suggestion, and validation steps actually "
+    "address the demonstrated issue in the code shown.\n"
+    "- Check whether the discovery stage made unsupported or undeclared assumptions beyond what "
+    "the scanner evidence and code context show.\n"
     "- Put a claim in `supported_claims` only if the evidence above substantiates it.\n"
     "- Put a claim in `unsupported_claims` if it goes beyond the evidence, depends on unstated "
     "assumptions, or asserts something the evidence cannot show. A claim being plausible, or "
@@ -74,6 +84,13 @@ def _format_claims_under_review(
     evidence: EvidenceAssessment, exploit_remediation: ExploitRemediationAssessment
 ) -> str:
     lines = ["Claims under review:", f"- Interpretation: {evidence.interpretation}"]
+    if evidence.observed_evidence:
+        lines.append("- Observed evidence cited by discovery:")
+        lines.extend(f"  - {item}" for item in evidence.observed_evidence)
+    if evidence.limitations:
+        lines.append("- Discovery limitations noted:")
+        lines.extend(f"  - {item}" for item in evidence.limitations)
+    lines.append(f"- Discovery groundedness claim: {evidence.groundedness.value}")
     exploit = exploit_remediation.exploit
     if exploit.exploit_path:
         lines.append(f"- Exploit path: {exploit.exploit_path}")
@@ -85,6 +102,9 @@ def _format_claims_under_review(
     lines.append(f"- Remediation: {exploit_remediation.remediation.remediation}")
     if exploit_remediation.remediation.patch_suggestion:
         lines.append(f"- Patch suggestion: {exploit_remediation.remediation.patch_suggestion}")
+    if exploit_remediation.remediation.validation_steps:
+        lines.append("- Validation steps:")
+        lines.extend(f"  - {item}" for item in exploit_remediation.remediation.validation_steps)
     return "\n".join(lines)
 
 

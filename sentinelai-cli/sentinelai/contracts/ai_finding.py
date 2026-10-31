@@ -14,7 +14,7 @@ involved in the same multi-step exploit chain.
 from enum import Enum
 from typing import Annotated, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from .common import Severity
 
@@ -151,9 +151,23 @@ class AIEnrichedFinding(BaseModel):
             "replaced: existing reports carry it, and it stays the human-readable form."
         ),
     )
-    confidence_score: float = Field(..., ge=0.0, le=1.0, description="Numeric confidence, 0.0-1.0")
-    confidence_label: ConfidenceLabel
+    confidence_score: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Numeric confidence, 0.0-1.0, or None when retrieval was unavailable to score confidence",
+    )
+    confidence_label: Optional[ConfidenceLabel] = Field(
+        None,
+        description="Categorical confidence tier, or None when confidence_score is unavailable",
+    )
     verification_status: VerificationStatus
+
+    @model_validator(mode="after")
+    def _validate_confidence_pair(self) -> "AIEnrichedFinding":
+        if (self.confidence_score is None) != (self.confidence_label is None):
+            raise ValueError("confidence_score and confidence_label must both be set or both be None")
+        return self
     related_findings: list[str] = Field(
         default_factory=list, description="finding_ids of other findings involved in the same exploit chain"
     )
@@ -189,6 +203,20 @@ class AIEnrichedFinding(BaseModel):
             "Critic agent's judgement of how well this finding's narrative is supported by the "
             "supplied evidence. None when no critic ran. Never derived from, and never converted "
             "into, verification_status - the two are independent signals."
+        ),
+    )
+    discovery_groundedness: Optional[GroundingVerdict] = Field(
+        None,
+        description=(
+            "Discovery agent's (EvidenceAssessment) groundedness assessment before independent "
+            "verification. Preserved alongside grounding_verdict so disagreements between "
+            "discovery and verification are recorded rather than silently resolved."
+        ),
+    )
+    verification_disagreement: bool = Field(
+        False,
+        description=(
+            "True when discovery_groundedness and the verifier's grounding_verdict disagree."
         ),
     )
     supported_claims: list[str] = Field(

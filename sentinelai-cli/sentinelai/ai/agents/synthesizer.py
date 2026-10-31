@@ -129,8 +129,8 @@ def synthesize(
     assessment: ExploitRemediationAssessment,
     critic: CriticAssessment,
     retrieved_chunks: list[RetrievedChunk],
-    confidence_score: float,
-    confidence_label: ConfidenceLabel,
+    confidence_score: Optional[float],
+    confidence_label: Optional[ConfidenceLabel],
     verification_status: VerificationStatus,
     repository_context: RepositoryContext,
 ) -> AIEnrichedFinding:
@@ -159,6 +159,8 @@ def synthesize(
         verification_status=verification_status,
         # Critic review signals - independent of verification_status.
         grounding_verdict=critic.verdict,
+        discovery_groundedness=evidence.groundedness,
+        verification_disagreement=(evidence.groundedness != critic.verdict),
         supported_claims=list(critic.supported_claims),
         unsupported_claims=list(critic.unsupported_claims),
         # Knowledge-base sourced.

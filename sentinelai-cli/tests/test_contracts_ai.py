@@ -43,7 +43,7 @@ LEGACY_REPORT = {
     "correlated_findings": [],
 }
 
-NEW_FIELDS = ("ai_provider", "ai_model", "egress_policy", "redaction")
+NEW_FIELDS = ("ai_provider", "ai_model", "egress_policy", "retention_status", "redaction")
 
 
 class TestScanMetadataBackwardCompatibility:

@@ -144,8 +144,8 @@ def test_environment_is_read_on_every_call(monkeypatch):
 @pytest.mark.parametrize(
     "overrides,env,message",
     [
-        ({"provider": "openai"}, {}, "--ai-provider must be one of ollama, groq, gemini, mock; got 'openai'"),
-        ({}, {PROVIDER_ENV: "claude"}, "SENTINELAI_AI_PROVIDER must be one of ollama, groq, gemini, mock; got 'claude'"),
+        ({"provider": "openai"}, {}, "--ai-provider must be one of"),
+        ({}, {PROVIDER_ENV: "claude"}, "SENTINELAI_AI_PROVIDER must be one of"),
         ({"provider": ""}, {}, "--ai-provider must be one of"),
         ({"egress": "maybe"}, {}, "--egress must be one of allow, deny; got 'maybe'"),
         ({}, {EGRESS_ENV: "yes"}, "SENTINELAI_EGRESS must be one of allow, deny; got 'yes'"),
@@ -192,7 +192,7 @@ def test_unknown_override_key_is_a_programming_error():
 def test_registry_covers_every_configurable_provider():
     from sentinelai.contracts import AIConfig
 
-    assert set(PROVIDERS) == {"ollama", "groq", "gemini", "mock"}
+    assert set(PROVIDERS) == {"ollama", "groq", "gemini", "mock", "grok", "nvidia"}
     assert PROVIDERS["mock"].provider_class is MockLLMProvider
     AIConfig(provider="mock", model=PROVIDERS["mock"].default_model)
 
@@ -203,10 +203,8 @@ def test_registry_covers_every_configurable_provider():
 @pytest.mark.parametrize(
     "args,env,message",
     [
-        (["--ai-provider", "openai"], {}, "--ai-provider must be one of ollama, groq, gemini, mock; got 'openai'"),
-        ([], {PROVIDER_ENV: "bogus"}, "SENTINELAI_AI_PROVIDER must be one of"),
+        (["--ai-provider", "openai"], {}, "--ai-provider must be one of"),
         (["--egress", "sometimes"], {}, "--egress must be one of allow, deny; got 'sometimes'"),
-        ([], {EGRESS_ENV: "1"}, "SENTINELAI_EGRESS must be one of allow, deny; got '1'"),
         (["--ai-provider", "mock", "--ai-model", ""], {}, "--ai-model must not be empty"),
         (["--ai-provider", "groq", "--egress", "allow"], {}, "groq needs GROQ_API_KEY set in the environment"),
         (["--ai-provider", "gemini", "--egress", "allow"], {}, "gemini needs GOOGLE_APPLICATION_CREDENTIALS"),
@@ -224,6 +222,79 @@ def test_scan_misconfiguration_exits_invalid_input(monkeypatch, scans, args, env
     assert message in _flat(result.stderr)
     assert _KEY_VALUE not in result.stderr + result.stdout
     assert scans == [], "configuration must be rejected before any scanner runs"
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {PROVIDER_ENV: "bogus"},
+        {EGRESS_ENV: "1"},
+        {PROVIDER_ENV: "groq"},
+        {PROVIDER_ENV: "gemini", EGRESS_ENV: "allow"},
+    ],
+)
+def test_invalid_ai_environment_does_not_block_a_scanner_only_run(monkeypatch, scans, env):
+    """A scanner-only run must not be refused by AI settings it never reads.
+
+    These same values DO exit 2 when passed as flags, or when AI is actually
+    requested - see test_scan_misconfiguration_exits_invalid_input and
+    test_invalid_ai_environment_is_enforced_once_ai_is_requested. The
+    distinction is consent: a variable left in a shell is configuration, not a
+    request to enrich on this run, and refusing the scan over it would make
+    every scanner-only invocation depend on AI configuration being valid.
+
+    Previously these two cases asserted exit 2. That behaviour was the P0
+    regression: it made `sentinelai scan` fail for a user who had merely
+    exported SENTINELAI_AI_PROVIDER earlier in their session.
+    """
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    result = _scan()
+    assert result.exit_code == ExitCode.SUCCESS
+    assert scans, "the scanner should have run"
+
+
+@pytest.mark.parametrize(
+    "env,message",
+    [
+        ({PROVIDER_ENV: "bogus"}, "SENTINELAI_AI_PROVIDER must be one of"),
+        ({EGRESS_ENV: "1"}, "SENTINELAI_EGRESS must be one of allow, deny; got '1'"),
+    ],
+)
+def test_invalid_ai_environment_is_enforced_once_ai_is_requested(monkeypatch, env, message):
+    """The same environment that a scanner-only run ignores must still exit 2 under --ai.
+
+    Validation is deferred, not dropped: nothing reaches a provider on a bad
+    configuration.
+    """
+    monkeypatch.setenv("SENTINELAI_AI_LLM_MODEL", "llama3.1:8b")
+    monkeypatch.setenv("SENTINELAI_AI_EMBEDDING_MODEL", "nomic-embed-text")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    result = _scan("--ai")
+    assert result.exit_code == ExitCode.INVALID_INPUT == 2
+    assert message in _flat(result.stderr)
+
+
+def test_provider_environment_variable_alone_does_not_activate_ai(monkeypatch, scans):
+    """SENTINELAI_AI_PROVIDER is configuration, not consent.
+
+    With no models configured and no --ai flag, naming a provider in the
+    environment must leave enrichment switched off, so no repository context is
+    sent to a provider the user did not ask for on this run.
+    """
+    monkeypatch.delenv("SENTINELAI_AI_LLM_MODEL", raising=False)
+    monkeypatch.delenv("SENTINELAI_AI_EMBEDDING_MODEL", raising=False)
+    monkeypatch.setenv(PROVIDER_ENV, "mock")
+    result = _scan()
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "AI enrichment skipped" in result.output or scans
+
+
+def test_provider_flag_does_activate_ai(scans):
+    """An explicit --ai-provider flag is a deliberate act, so it must not be ignored."""
+    result = _scan("--ai-provider", "mock", "--ai-model", "mock-model")
+    assert result.exit_code == ExitCode.SUCCESS
 
 
 def test_scan_with_mock_provider_succeeds(scans):

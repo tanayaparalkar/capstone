@@ -102,10 +102,13 @@ from .embeddings_ollama import make_ollama_embed_fn
 from sentinelai.contracts import AIConfig
 
 from .llm.base import LLMProvider
+from .llm.fallback import create_fallback_provider
 from .llm.gemini import GeminiProvider
 from .llm.groq import GroqProvider
 from .llm.mock import MockLLMProvider
+from .llm.nvidia import NvidiaNimProvider
 from .llm.ollama import OllamaProvider as LocalOllamaProvider
+from .llm.xai import GrokProvider
 from .llm_ollama import OllamaProvider
 from .retrieval import EmbeddingFn, InMemoryRetriever, RetrievedChunk, Retriever
 
@@ -145,14 +148,26 @@ def create_retriever_for_scan() -> Retriever:
 
 def create_llm_provider(cfg: AIConfig) -> LLMProvider:
     """The multi-provider LLMProvider for a resolved AIConfig. Raises ProviderError on misconfiguration."""
+    if cfg.fallback_providers:
+        return create_fallback_provider(cfg)
     settings = get_settings()
     if cfg.provider == "ollama":
         return LocalOllamaProvider(cfg.model, host=settings.llm_host, timeout_s=settings.request_timeout_seconds)
     if cfg.provider == "groq":
         return GroqProvider(cfg.model)
+    if cfg.provider == "grok":
+        return GrokProvider(cfg.model)
+    if cfg.provider == "nvidia":
+        return NvidiaNimProvider(cfg.model)
     if cfg.provider == "gemini":
         return GeminiProvider(cfg.model)
     return MockLLMProvider()
+
+
+def create_role_generator(cfg: AIConfig, max_tokens: int = 2048, temperature: float = 0.1):
+    """Construct a RoleAwareGenerator for multi-role vulnerability discovery, remediation, and verification."""
+    from sentinelai.ai.llm.roles import RoleAwareGenerator
+    return RoleAwareGenerator(cfg, max_tokens=max_tokens, temperature=temperature)
 
 
 def create_llm_generate_fn() -> LLMFn:

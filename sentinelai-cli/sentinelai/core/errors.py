@@ -19,7 +19,15 @@ class InvalidInputError(SentinelAIError):
 
 
 class ProviderError(SentinelAIError):
-    """The FindingsProvider failed to produce a scan result."""
+    """The FindingsProvider failed to produce a scan result.
+
+    Note: This is specifically for scanner findings providers (Semgrep, Bandit,
+    GitLeaks, etc.). For LLM provider failures during AI enrichment, see
+    sentinelai.ai.llm.base.ProviderError (or sentinelai.ai.llm.LLMProviderError).
+    """
+
+
+FindingsProviderError = ProviderError
 
 
 class AIEnrichmentError(SentinelAIError):

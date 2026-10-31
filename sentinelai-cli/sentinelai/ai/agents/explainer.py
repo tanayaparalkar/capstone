@@ -87,7 +87,12 @@ class LLMFn(Protocol):
     provider-aware.
     """
 
-    def __call__(self, prompt: str, response_schema: Optional[Type[BaseModel]] = None) -> str:
+    def __call__(
+        self,
+        prompt: str,
+        response_schema: Optional[Type[BaseModel]] = None,
+        system: Optional[str] = None,
+    ) -> str:
         ...
 
 

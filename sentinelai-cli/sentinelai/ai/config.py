@@ -83,17 +83,17 @@ reads the environment on every call rather than caching, because a
 remote provider has to be opted into explicitly *for this run*, and a
 cached answer from earlier in the process is not that.
 
-    provider  --ai-provider  SENTINELAI_AI_PROVIDER  ollama
+    provider  --ai-provider  SENTINELAI_AI_PROVIDER  auto (ollama when egress=deny; gemini -> grok -> nvidia -> ollama when egress=allow and credentials are present)
     model     --ai-model     SENTINELAI_AI_MODEL     the provider's default model
     egress    --egress       SENTINELAI_EGRESS       deny
 
 The defaults are local and closed: a first run with nothing configured
-never sends code off the machine. Choosing a remote provider is refused
-here, before anything runs, unless egress is "allow" and every
-credential variable the provider needs is present - so a remote run is
-always the result of the user saying so, never of a fallback.
-Credential variables are checked for presence only; their values are
-never read into AIConfig, logged, or echoed in an error.
+never sends code off the machine. Explicitly choosing a remote provider
+is refused here, before anything runs, unless egress is "allow" and every
+credential variable the provider needs is present; automatic remote
+selection and remote fallback occur only when egress is explicitly set to
+"allow". Credential variables are checked for presence only; their values
+are never read into AIConfig, logged, or echoed in an error.
 """
 import logging
 import os
@@ -108,9 +108,16 @@ from sentinelai.contracts import AIConfig
 
 from .llm.base import LLMProvider
 from .llm.gemini import CREDENTIALS_ENV, PROJECT_ENV, GeminiProvider
-from .llm.groq import API_KEY_ENV, GroqProvider
+from .llm.groq import API_KEY_ENV as GROQ_API_KEY_ENV, GroqProvider
 from .llm.mock import MockLLMProvider
+from .llm.nvidia import API_KEY_ENV as NVIDIA_API_KEY_ENV, NvidiaNimProvider
 from .llm.ollama import OllamaProvider
+from .llm.xai import API_KEY_ENV as XAI_API_KEY_ENV, GrokProvider
+
+# Keep the old name available for any remaining internal references.
+API_KEY_ENV = GROQ_API_KEY_ENV
+
+from .local_endpoint import validate_local_endpoint
 
 _ENV_PREFIX = "SENTINELAI_AI_"
 
@@ -230,6 +237,22 @@ class AISettings(BaseModel):
     def _normalize_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
 
+    @field_validator("llm_host")
+    @classmethod
+    def _require_local_endpoint(cls, value: str) -> str:
+        """Refuse a host that is not on this machine.
+
+        Checked here because llm_host is the single place the endpoint is
+        configured, so one validator covers both the /api/generate and
+        /api/embed clients that read it. The embedding path is why this
+        matters most: ai/retrieval/context_retrieval.py builds its query
+        from the finding's raw_evidence - repository source - so a remote
+        host would send that source off the machine as a side effect of
+        retrieval. See ai/local_endpoint.py for what the check does and
+        does not guarantee.
+        """
+        return validate_local_endpoint(value)
+
     @model_validator(mode="after")
     def _validate_confidence_thresholds(self) -> "AISettings":
         if self.confidence_medium_threshold >= self.confidence_high_threshold:
@@ -238,6 +261,27 @@ class AISettings(BaseModel):
                 f"(got medium={self.confidence_medium_threshold}, high={self.confidence_high_threshold})"
             )
         return self
+
+
+def ai_models_configured() -> bool:
+    """True when both model variables are present, without building AISettings.
+
+    Exists so a scanner-only run is never refused because of a setting it will
+    never read. The caller needs one fact - "did the user configure AI?" - to
+    decide whether to enrich at all, and answering it by constructing AISettings
+    would also run llm_host's validator, failing a scan that was never going to
+    contact Ollama.
+
+    This does not weaken anything. It is only ever used to decide *whether* to
+    enrich; every path that actually reaches Ollama goes through get_settings()
+    first, which validates in full. The presence test matches what the previous
+    `settings.llm_model is not None` check did exactly, including treating a
+    variable set to the empty string as present.
+    """
+    return (
+        os.environ.get(_ENV_PREFIX + "LLM_MODEL") is not None
+        and os.environ.get(_ENV_PREFIX + "EMBEDDING_MODEL") is not None
+    )
 
 
 def _settings_from_env() -> AISettings:
@@ -277,8 +321,25 @@ def get_settings() -> AISettings:
 PROVIDER_ENV = "SENTINELAI_AI_PROVIDER"
 MODEL_ENV = "SENTINELAI_AI_MODEL"
 EGRESS_ENV = "SENTINELAI_EGRESS"
+PRIORITY_ENV = "SENTINELAI_AI_PROVIDER_PRIORITY"
+FALLBACK_ENV = "SENTINELAI_AI_PROVIDER_FALLBACK"
+ROLE_DISCOVERY_ENV = "SENTINELAI_AI_ROLE_DISCOVERY"
+ROLE_REMEDIATION_ENV = "SENTINELAI_AI_ROLE_REMEDIATION"
+ROLE_VERIFICATION_ENV = "SENTINELAI_AI_ROLE_VERIFICATION"
+_ROLE_ENVS: dict[str, str] = {
+    "discovery": ROLE_DISCOVERY_ENV,
+    "remediation": ROLE_REMEDIATION_ENV,
+    "verification": ROLE_VERIFICATION_ENV,
+}
 DEFAULT_PROVIDER = "ollama"
 DEFAULT_EGRESS = "deny"
+
+DEFAULT_PROVIDER_PRIORITY: tuple[str, ...] = ("gemini", "grok", "nvidia", "ollama")
+# No alias mapping anymore — "grok" is now a real provider (xAI Grok via xai.py).
+# "groq" remains the separate Groq provider; neither aliases the other.
+PROVIDER_ALIASES: dict[str, str] = {}
+# All providers in DEFAULT_PROVIDER_PRIORITY are implemented; nothing to skip.
+UNIMPLEMENTED_PROVIDERS: set[str] = set()
 
 _PROVIDER_NAMES: tuple[str, ...] = get_args(AIConfig.model_fields["provider"].annotation)
 _EGRESS_VALUES: tuple[str, ...] = get_args(AIConfig.model_fields["egress"].annotation)
@@ -303,14 +364,24 @@ class ProviderSpec:
     def retains_data(self) -> Optional[bool]:
         return self.provider_class.retains_data
 
+    @property
+    def retention_basis(self) -> str:
+        return self.provider_class.retention_basis
+
+    @property
+    def retention_policy_note(self) -> str:
+        return self.provider_class.retention_policy_note
+
 
 PROVIDERS: dict[str, ProviderSpec] = {
     spec.name: spec
     for spec in (
         ProviderSpec("ollama", OllamaProvider, "llama3.1:8b", ()),
-        ProviderSpec("groq", GroqProvider, "llama-3.3-70b-versatile", (API_KEY_ENV,)),
+        ProviderSpec("groq", GroqProvider, "llama-3.3-70b-versatile", (GROQ_API_KEY_ENV,)),
         ProviderSpec("gemini", GeminiProvider, "gemini-2.5-flash", (CREDENTIALS_ENV, PROJECT_ENV)),
         ProviderSpec("mock", MockLLMProvider, "mock-model", ()),
+        ProviderSpec("grok", GrokProvider, "grok-4", (XAI_API_KEY_ENV,)),
+        ProviderSpec("nvidia", NvidiaNimProvider, "meta/llama-3.1-70b-instruct", (NVIDIA_API_KEY_ENV,)),
     )
 }
 assert set(PROVIDERS) == set(_PROVIDER_NAMES), "every AIConfig provider needs exactly one registry entry"
@@ -331,15 +402,61 @@ def resolve_config(cli_overrides: dict) -> AIConfig:
         raise ValueError(f"unknown cli_overrides keys: {sorted(unknown)}")
 
     problems: list[str] = []
-    provider, provider_source = _pick("provider", cli_overrides, DEFAULT_PROVIDER)
+    raw_provider_val, provider_source = _pick("provider", cli_overrides, "auto")
     egress, egress_source = _pick("egress", cli_overrides, DEFAULT_EGRESS)
-    provider, egress = provider.strip().lower(), egress.strip().lower()
+    egress = egress.strip().lower()
+
+    if egress not in _EGRESS_VALUES:
+        problems.append(f"{egress_source} must be one of {', '.join(_EGRESS_VALUES)}; got {egress!r}")
+
+    is_auto = False
+    raw_provider_str = raw_provider_val.strip().lower()
+    fallbacks: list[str] = []
+
+    if provider_source == "default" or raw_provider_str == "auto":
+        is_auto = True
+        # Automatic provider selection in desired priority order:
+        # 1. Gemini -> 2. Grok (xAI) -> 3. NVIDIA -> 4. Ollama
+        # Ollama must be the final fallback, not the default first choice when a hosted provider is configured and authorized.
+        if egress == "allow":
+            if (
+                os.environ.get(CREDENTIALS_ENV, "").strip()
+                and os.environ.get(PROJECT_ENV, "").strip()
+            ):
+                provider = "gemini"
+                fallbacks = ["grok", "nvidia", "ollama"]
+            elif os.environ.get(XAI_API_KEY_ENV, "").strip():
+                provider = "grok"
+                fallbacks = ["nvidia", "ollama"]
+            elif os.environ.get(NVIDIA_API_KEY_ENV, "").strip():
+                provider = "nvidia"
+                fallbacks = ["ollama"]
+            else:
+                provider = "ollama"
+                fallbacks = []
+        else:
+            provider = "ollama"
+            fallbacks = []
+    elif "," in raw_provider_str:
+        parts = [p.strip() for p in raw_provider_str.split(",") if p.strip()]
+        provider = parts[0] if parts else ""
+        fallbacks = parts[1:]
+    else:
+        provider = raw_provider_str
+        if os.environ.get(FALLBACK_ENV, "").strip().lower() not in ("false", "0", "no"):
+            priority_env = os.environ.get(PRIORITY_ENV, "").strip().lower()
+            if priority_env:
+                p_list = [p.strip() for p in priority_env.split(",") if p.strip()]
+            else:
+                p_list = list(DEFAULT_PROVIDER_PRIORITY)
+            if provider in p_list:
+                idx = p_list.index(provider)
+                fallbacks = [p for p in p_list[idx + 1 :] if p in PROVIDERS and p != provider]
 
     spec = PROVIDERS.get(provider)
     if spec is None:
-        problems.append(f"{provider_source} must be one of {', '.join(PROVIDERS)}; got {provider!r}")
-    if egress not in _EGRESS_VALUES:
-        problems.append(f"{egress_source} must be one of {', '.join(_EGRESS_VALUES)}; got {egress!r}")
+        reported_name = raw_provider_val.strip()
+        problems.append(f"{provider_source} must be one of {', '.join(PROVIDERS)}; got {reported_name!r}")
 
     default_model = spec.default_model if spec else ""
     if provider == "ollama" and os.environ.get(_ENV_PREFIX + "LLM_MODEL", "").strip():
@@ -349,19 +466,71 @@ def resolve_config(cli_overrides: dict) -> AIConfig:
     if spec is not None and not model:
         problems.append(f"{model_source} must not be empty")
 
-    if spec is not None and not spec.is_local:
+    if spec is not None and not spec.is_local and not is_auto:
         if egress == "deny":
             problems.append(
-                f"{provider} is a remote provider and sends code off this machine, but egress is deny "
+                f"{raw_provider_str} is a remote provider and sends code off this machine, but egress is deny "
                 f"({egress_source}); pass --egress allow to opt in for this run"
             )
         missing = [name for name in spec.required_env if not os.environ.get(name, "").strip()]
         if missing:
-            problems.append(f"{provider} needs {' and '.join(missing)} set in the environment")
+            problems.append(f"{raw_provider_str} needs {' and '.join(missing)} set in the environment")
+
+    from .llm.roles import DEFAULT_ROLE_CHAINS
+
+    role_chains: dict[str, list[str]] = {}
+    if any(os.environ.get(env_name, "").strip() for env_name in _ROLE_ENVS.values()):
+        for role_name, env_name in _ROLE_ENVS.items():
+            raw_chain = os.environ.get(env_name, "").strip()
+            if raw_chain:
+                chain_parts = [p.strip().lower() for p in raw_chain.split(",") if p.strip()]
+                if not chain_parts:
+                    problems.append(f"{env_name} must list at least one provider")
+                for part in chain_parts:
+                    if part not in PROVIDERS:
+                        problems.append(
+                            f"{env_name} must contain only {', '.join(PROVIDERS)}; got {part!r}"
+                        )
+                role_chains[role_name] = chain_parts
+            else:
+                role_chains[role_name] = list(DEFAULT_ROLE_CHAINS[role_name])
+    elif is_auto:
+        role_chains = {k: list(v) for k, v in DEFAULT_ROLE_CHAINS.items()}
+    elif provider == "mock" and not fallbacks:
+        role_chains = {
+            "discovery": ["mock"],
+            "remediation": ["mock"],
+            "verification": ["mock"],
+        }
+    elif "," in raw_provider_str or os.environ.get(FALLBACK_ENV, "").strip().lower() in ("false", "0", "no"):
+        explicit_chain = [provider, *[p for p in fallbacks if p != provider]] if provider else []
+        role_chains = {
+            "discovery": list(explicit_chain),
+            "remediation": list(explicit_chain),
+            "verification": list(explicit_chain),
+        }
+    elif provider in PROVIDERS:
+        disc_chain = [provider, *[p for p in fallbacks if p != provider]]
+        rem_chain = [
+            provider,
+            *[p for p in DEFAULT_ROLE_CHAINS["remediation"] if p != provider and p in PROVIDERS],
+        ]
+        ver_chain = list(DEFAULT_ROLE_CHAINS["verification"])
+        role_chains = {
+            "discovery": disc_chain,
+            "remediation": rem_chain,
+            "verification": ver_chain,
+        }
 
     if problems:
         raise AIConfigError("; ".join(problems))
-    return AIConfig(provider=provider, model=model, egress=egress)
+    return AIConfig(
+        provider=provider,
+        model=model,
+        egress=egress,
+        fallback_providers=fallbacks,
+        role_chains=role_chains,
+    )
 
 
 def _pick(field: str, cli_overrides: dict, default: str) -> tuple[str, str]:

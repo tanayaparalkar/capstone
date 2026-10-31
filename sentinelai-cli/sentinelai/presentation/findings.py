@@ -32,7 +32,12 @@ def render_findings_table(console: Console, result: ScanResult) -> None:
     for f in findings:
         sev_style = SEVERITY_STYLE.get(f.severity, "white")
         ai = ai_by_id.get(f.finding_id)
-        confidence = "[bright_black]PENDING[/bright_black]" if ai is None else ai.confidence_label.value.upper()
+        if ai is None:
+            confidence = "[bright_black]PENDING[/bright_black]"
+        elif ai.confidence_label is None:
+            confidence = "[bright_black]UNAVAILABLE[/bright_black]"
+        else:
+            confidence = ai.confidence_label.value.upper()
         table.add_row(
             f.finding_id,
             f"[{sev_style}]{f.severity.value.upper()}[/{sev_style}]",
@@ -71,10 +76,12 @@ def render_finding_detail(console: Console, finding: ScannerFinding, ai: Optiona
         if ai.impact:
             sections += ["", Text("Impact", style="bold"), Text(ai.impact)]
         sections += ["", Text("Remediation", style="bold"), Text(ai.remediation)]
-        status_line = (
+        confidence_part = (
             f"Confidence: {ai.confidence_label.value.upper()} ({ai.confidence_score:.2f})   "
-            f"Verification: {ai.verification_status.value}"
+            if (ai.confidence_score is not None and ai.confidence_label is not None)
+            else "Confidence: UNAVAILABLE   "
         )
+        status_line = f"{confidence_part}Verification: {ai.verification_status.value}"
         # Grounding is appended to the same status line rather than replacing
         # Verification: they are independent signals and a reader needs both.
         # Omitted when no critic ran, so scanner-only and pre-multi-agent reports

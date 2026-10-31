@@ -48,21 +48,33 @@ from typing import Optional
 
 import typer
 import typer.rich_utils
+from pydantic import ValidationError
 from rich.console import Console
 from rich.markup import escape
 
 from . import __version__
 from .ai import enrich_findings
-from .ai.config import PROVIDER_ENV, AIConfigError, get_settings, resolve_config
+from .ai.config import PROVIDERS, AIConfigError, ai_models_configured, get_settings, resolve_config
 from .ai.confidence_scorer import score_confidence
-from .ai.factory import create_llm_provider, create_retriever_for_scan
+from .ai.factory import create_llm_provider, create_retriever_for_scan, create_role_generator
 from .ai.prompt_builder import ai_fault, guarded_generate, scan_session
 from .ai.repository_context import from_backend_context
 from .ai.verifier import verify_finding
 from .backend.context_builder import build_repository_context
 from .patching import run_patches
 from .backend.loader import load_repository
-from .contracts import AIConfig, ScanMode, ScannerTier, ScanResult, Severity
+from .contracts import (
+    AIConfig,
+    ScanMode,
+    ScannerTier,
+    ScanResult,
+    Severity,
+    aggregate_retention_status,
+    retention_status_from_provider,
+)
+
+_default_create_llm_provider = create_llm_provider
+_default_create_role_generator = create_role_generator
 from .core import ExitCode, exceeds_fail_on_threshold, filter_by_severity
 from .core.errors import AIEnrichmentError
 from .core.observability import log_duration
@@ -155,6 +167,58 @@ def _fail_from_exception(message: str, exc: Exception, code: ExitCode, debug: bo
     raise typer.Exit(code=code)
 
 
+def _ai_settings():
+    """get_settings(), with an unusable SENTINELAI_AI_* value reported as INVALID_INPUT.
+
+    INVALID_INPUT (2) for the same reason _require_ai_configuration() below uses
+    it: a rejected SENTINELAI_AI_LLM_HOST means the command as invoked is not
+    satisfiable, nothing has failed and nothing external has been contacted.
+
+    Without this the pydantic ValidationError propagates out of the command and
+    Typer exits 1 - which is SECURITY_FINDINGS, so a CI gate could not tell a
+    misconfigured host from findings crossing its threshold. Only the first
+    error's message is printed; the full pydantic dump is noise to a user who
+    set one environment variable wrongly.
+    """
+    try:
+        return get_settings()
+    except ValidationError as exc:
+        _fail(_settings_error_message(exc), ExitCode.INVALID_INPUT)
+
+
+def _settings_error_message(exc: ValidationError) -> str:
+    """The first validation error's own message. The full pydantic dump is noise."""
+    errors = exc.errors()
+    detail = errors[0].get("msg", "") if errors else ""
+    text = str(detail) or str(exc)
+    if text.startswith("Value error, "):
+        text = text[len("Value error, "):]
+    return f"invalid AI configuration: {text}"
+
+
+def _ai_decision():
+    """Return (settings, error, models_configured) without refusing a scanner-only run.
+
+    Goes through get_settings() - the same seam main.py uses everywhere else, so
+    injecting settings in a test still governs the decision - but tolerates a
+    failure here rather than exiting, because at this point it is not yet known
+    whether AI will be used at all. A stale SENTINELAI_AI_LLM_HOST must not fail
+    a scan that was never going to contact Ollama.
+
+    When settings cannot be built, the environment is consulted for one fact
+    only: did the user ask for AI? That keeps a genuine misconfiguration
+    reportable - models set plus a bad host still fails - instead of silently
+    degrading to a scanner-only run, while a scan with no AI configured is
+    unaffected. The caller enforces the error before anything is transmitted.
+    """
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        return None, exc, ai_models_configured()
+    configured = settings.llm_model is not None and settings.embedding_model is not None
+    return settings, None, configured
+
+
 def _require_ai_configuration() -> None:
     """Exit with INVALID_INPUT unless both AI model variables are set.
 
@@ -168,7 +232,7 @@ def _require_ai_configuration() -> None:
     Names only the variables that are missing, so a user who has set one of the
     two is not told to set both.
     """
-    settings = get_settings()
+    settings = _ai_settings()
     missing = []
     if settings.llm_model is None:
         missing.append("SENTINELAI_AI_LLM_MODEL")
@@ -441,10 +505,16 @@ def scan(
     if no_ai and any(value is not None for value in ai_flags.values()):
         given = [flag for flag, value in zip(("--ai-provider", "--ai-model", "--egress"), ai_flags.values()) if value is not None]
         _fail(f"--no-ai cannot be used together with {', '.join(given)}.", ExitCode.INVALID_INPUT)
-    if not no_ai:
-        # Resolved before any scanner runs, for the same reason as --ai above. The defaults
-        # (local ollama, egress deny) need no credentials and cannot fail, so this only stops
-        # a run whose provider settings were explicitly set to something unusable.
+    # Resolved here only when AI was explicitly requested, for the same reason as
+    # --ai above: fail fast rather than making the user wait out a full scan.
+    #
+    # Deliberately NOT resolved for every run that merely lacks --no-ai. Provider
+    # settings are AI settings, so a scanner-only run must not be refused by one -
+    # a stale SENTINELAI_AI_PROVIDER left in a shell would otherwise exit 2 on a
+    # scan that was never going to contact any provider. The auto-detect path
+    # resolves it below instead, inside the branch that can actually transmit.
+    ai_config: Optional[AIConfig] = None
+    if ai or any(value is not None for value in ai_flags.values()):
         ai_config = _resolve_ai_config(ai_flags)
         logger.info(
             "AI configuration: provider=%s model=%s egress=%s", ai_config.provider, ai_config.model, ai_config.egress
@@ -513,16 +583,39 @@ def scan(
         "scan retrieved %d scanner findings in %.2fs", len(result.scanner_findings), elapsed
     )
 
-    settings = get_settings()
-    # Three states, one expression: --no-ai always skips; --ai has already been
-    # validated above so it always enriches; with neither flag the pre-existing
-    # auto-detect applies unchanged, which is what keeps every existing
-    # invocation - and every benchmark - behaving exactly as before.
-    ai_configured = settings.llm_model is not None and settings.embedding_model is not None
-    # Choosing a provider (flag or SENTINELAI_AI_PROVIDER) is itself a request for enrichment.
-    provider_chosen = ai_provider is not None or bool(os.environ.get(PROVIDER_ENV, "").strip())
-    enrich = False if no_ai else (ai or ai_configured or provider_chosen)
+    # Three states: --no-ai always skips; --ai has already been validated above
+    # so it always enriches; with neither flag the pre-existing auto-detect
+    # applies unchanged, which is what keeps every existing invocation - and
+    # every benchmark - behaving exactly as before.
+    #
+    # _ai_decision() rather than get_settings(): a scanner-only run must not be
+    # refused because of an AI setting it will never read, so a settings failure
+    # is carried here rather than raised. It is enforced immediately below, on
+    # the only branch that can transmit anything.
+    #
+    # --ai-provider counts as a request because passing a flag is a deliberate
+    # act on this run. SENTINELAI_AI_PROVIDER deliberately does NOT: an
+    # environment variable that happens to be set in a shell is configuration,
+    # not consent, and letting it switch enrichment on would start sending
+    # repository context to a provider the user never asked for here.
+    _settings, settings_error, ai_configured = _ai_decision()
+    enrich = False if no_ai else (ai or ai_configured or ai_provider is not None)
     if enrich:
+        # Enforced before any AI request is built, so nothing is sent on a bad
+        # host. The --ai path has already been through this at
+        # _require_ai_configuration(); the auto-detect path reaches it here.
+        if settings_error is not None:
+            _fail(_settings_error_message(settings_error), ExitCode.INVALID_INPUT)
+        # The auto-detect path has not resolved provider configuration yet, because
+        # doing so before this point would refuse scanner-only runs. Resolved now,
+        # still before any request is built, so a bad provider/egress combination
+        # is reported as INVALID_INPUT rather than attempted.
+        if ai_config is None:
+            ai_config = _resolve_ai_config(ai_flags)
+            logger.info(
+                "AI configuration: provider=%s model=%s egress=%s",
+                ai_config.provider, ai_config.model, ai_config.egress,
+            )
         # Rebuilds repository context via the backend rather than threading it through
         # FindingsProvider: LiveFindingsProvider already builds one internally, but
         # ScanResult (the frozen FindingsProvider contract) has no field to carry it
@@ -532,12 +625,37 @@ def scan(
         # rather than changing the provider contract for it.
         logger.info("AI enrichment started: %d findings", len(result.scanner_findings))
         faults = []
+        llm_provider = None
+        role_gen = None
         # The SecretIndex is built here, once, from every scanner finding, before any prompt.
         with scan_session(result.scanner_findings, ai_config) as session:
             try:
-                generate = guarded_generate(
-                    create_llm_provider(ai_config), ai_config, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE
-                )
+                if ai_config.role_chains and create_llm_provider is _default_create_llm_provider:
+                    from .ai import factory as _ai_factory
+                    _role_gen_fn = (
+                        create_role_generator
+                        if create_role_generator is not _default_create_role_generator
+                        else _ai_factory.create_role_generator
+                    )
+                    role_gen = _role_gen_fn(
+                        ai_config,
+                        temperature=AI_TEMPERATURE,
+                        max_tokens=AI_MAX_TOKENS,
+                    )
+                    generate = guarded_generate(
+                        role_gen,
+                        ai_config,
+                        temperature=AI_TEMPERATURE,
+                        max_tokens=AI_MAX_TOKENS,
+                    )
+                else:
+                    llm_provider = create_llm_provider(ai_config)
+                    generate = guarded_generate(
+                        llm_provider,
+                        ai_config,
+                        temperature=AI_TEMPERATURE,
+                        max_tokens=AI_MAX_TOKENS,
+                    )
                 backend_context = build_repository_context(load_repository(str(repo_path)))
                 ai_findings = enrich_findings(
                     result.scanner_findings,
@@ -562,11 +680,55 @@ def scan(
                 if not (faults and isinstance(exc, AIEnrichmentError)):
                     faults.append(ai_fault(None, exc))
                 ai_findings = []
+        role_prov_list = []
+        override_retention_status = None
+        if role_gen is not None:
+            role_prov_list = role_gen.get_role_provenance()
+            for rf in role_gen.get_faults():
+                if rf not in faults:
+                    faults.append(rf)
+            disc_entry = next((rp for rp in role_prov_list if rp.role == "discovery"), None)
+            primary_entry = disc_entry or (role_prov_list[0] if role_prov_list else None)
+            active_name = (
+                primary_entry.provider
+                if primary_entry is not None
+                else (role_gen.active_discovery_provider or ai_config.provider)
+            )
+            active_model = (
+                primary_entry.model
+                if primary_entry is not None
+                else (role_gen.active_discovery_model or ai_config.model)
+            )
+            spec = PROVIDERS.get(active_name)
+            active_retains = spec.retains_data if spec is not None else None
+            active_is_local = spec.is_local if spec is not None else None
+            if role_prov_list:
+                override_retention_status = aggregate_retention_status(
+                    [rp.retention_status for rp in role_prov_list]
+                )
+        elif llm_provider is not None:
+            active_name = getattr(llm_provider, "active_provider_name", ai_config.provider)
+            active_model = getattr(llm_provider, "active_model_name", ai_config.model)
+            active_retains = getattr(llm_provider, "retains_data", None)
+            active_is_local = getattr(llm_provider, "is_local", None)
+            if hasattr(llm_provider, "fallback_faults"):
+                for ff in llm_provider.fallback_faults:
+                    if ff not in faults:
+                        faults.append(ff)
+        else:
+            active_name = ai_config.provider
+            active_model = ai_config.model
+            spec = PROVIDERS.get(ai_config.provider)
+            active_retains = spec.retains_data if spec is not None else None
+            active_is_local = spec.is_local if spec is not None else None
         provenance = {
-            "ai_provider": ai_config.provider,
-            "ai_model": ai_config.model,
+            "ai_provider": active_name,
+            "ai_model": active_model,
             "egress_policy": ai_config.egress,
+            "retention_status": override_retention_status
+            or retention_status_from_provider(active_retains, is_local=active_is_local),
             "redaction": session.redaction_report(),
+            "role_provenance": role_prov_list,
             "ai_faults": faults,
         }
         result = result.model_copy(

@@ -142,7 +142,7 @@ def _findings_overview(scanner_findings: list[ScannerFinding], ai_by_id: dict[st
     ]
     for f in scanner_findings:
         ai = ai_by_id.get(f.finding_id)
-        confidence = ai.confidence_label.value if ai else "pending"
+        confidence = (ai.confidence_label.value if ai.confidence_label is not None else "unavailable") if ai else "pending"
         verification = ai.verification_status.value if ai else "—"
         lines.append(
             f"| {f.finding_id} | {f.severity.value.upper()} | {f.scanner} | {f.category} "
@@ -193,9 +193,14 @@ def _finding_section(f: ScannerFinding, ai: Optional[AIEnrichedFinding], corr=No
         lines += ["", "**Remediation**", "", ai.remediation]
         if ai.patch_suggestion:
             lines += ["", "**Patch Suggestion**", "", _fenced_code(ai.patch_suggestion)]
+        confidence_bullet = (
+            f"- **Confidence:** {ai.confidence_label.value.upper()} ({ai.confidence_score:.2f})"
+            if (ai.confidence_score is not None and ai.confidence_label is not None)
+            else "- **Confidence:** unavailable"
+        )
         lines += [
             "",
-            f"- **Confidence:** {ai.confidence_label.value.upper()} ({ai.confidence_score:.2f})",
+            confidence_bullet,
             f"- **Verification:** {ai.verification_status.value}",
         ]
         # Critic review signals, rendered separately from Verification above:

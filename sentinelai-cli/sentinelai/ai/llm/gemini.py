@@ -56,6 +56,12 @@ class GeminiProvider(LLMProvider):
     name: ClassVar[str] = "gemini"
     is_local: ClassVar[bool] = False
     retains_data: ClassVar[Optional[bool]] = None
+    retention_basis: ClassVar[str] = "unverified_project_data_governance"
+    retention_policy_note: ClassVar[str] = (
+        "Google Cloud Vertex AI service-specific data-handling terms distinguish model-training "
+        "restrictions from service and abuse-monitoring storage depending on project settings; "
+        "actual project configuration cannot be verified at runtime."
+    )
 
     def __init__(
         self,
@@ -93,11 +99,20 @@ class GeminiProvider(LLMProvider):
     def __repr__(self) -> str:
         return f"GeminiProvider(model={self.model!r}, project={self.project!r}, location={self.location!r})"
 
-    def complete(self, prompt: str, *, max_tokens: int, temperature: float) -> LLMResponse:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        max_tokens: int = 2048,
+        temperature: float = 0.1,
+    ) -> LLMResponse:
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"maxOutputTokens": max_tokens, "temperature": temperature},
         }
+        if system:
+            payload["systemInstruction"] = {"parts": [{"text": system}]}
         headers = {"Authorization": f"Bearer {self._access_token()}"}
         body, latency_ms = post_json(self.name, self._url, payload, headers, self._timeout_s)
         text = _candidate_text(body)

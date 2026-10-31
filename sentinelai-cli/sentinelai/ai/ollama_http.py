@@ -71,6 +71,59 @@ import urllib.request
 # Same logger name and silent-by-default convention as the rest of the package.
 logger = logging.getLogger("sentinelai")
 
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect instead of following it.
+
+    Returning None from redirect_request() tells urllib the 3xx was not
+    handled, so it falls through to HTTPDefaultErrorHandler and surfaces as an
+    ordinary HTTPError carrying the original status. Nothing is re-sent: the
+    request body never reaches the Location target, and the target is never
+    contacted at all.
+
+    Why this is needed. ai/local_endpoint.py validates the host that was
+    *configured*; it cannot speak for where a reply points next. urllib follows
+    301/302/303/307 by default (and 308 from Python 3.11), so a server
+    listening on loopback could otherwise bounce a request - carrying the
+    retrieval query, which is built from repository source - to any address it
+    named. Refusing redirects outright is what makes "validated local host"
+    mean "the only host contacted".
+
+    On Python 3.9/3.10 there is no http_error_308 on the base handler, so a 308
+    already falls through to the same HTTPError. The override makes 301, 302,
+    303 and 307 behave identically to it rather than being followed.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102 - stdlib signature
+        return None
+
+
+# ProxyHandler({}) - an explicitly empty proxy map - is what disables proxying.
+# Without it urllib builds a ProxyHandler from http_proxy/https_proxy/ALL_PROXY,
+# and because no_proxy is frequently unset, a request to a *validated loopback*
+# host is handed to the proxy instead. Measured, not assumed: with http_proxy
+# pointed at a recording server, that server received the full URL and request
+# body while the loopback server received nothing. ai/local_endpoint.py checks
+# where the request is addressed; this is what makes the address also the
+# destination. See tests/test_ai_ollama_redirects.py.
+#
+# Installed process-wide rather than called as `_opener.open(...)` so that
+# urllib.request.urlopen() below stays the single call site - and therefore the
+# single patch point the whole test suite already targets (see the convention
+# noted in ai/llm_ollama.py and tests/test_ai_ollama_retry.py). Both Ollama
+# clients share this module, so one install covers /api/generate and /api/embed
+# alike. NOTE: the reach is the whole process, so any future urllib caller -
+# including a hosted LLM provider - inherits no-proxy and no-redirect. That is
+# the safe direction, but it is a coupling to resolve deliberately rather than
+# by accident if a hosted-provider transport is added.
+_NO_PROXY_NO_REDIRECT_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), _RefuseRedirects
+)
+urllib.request.install_opener(_NO_PROXY_NO_REDIRECT_OPENER)
+
+# Backwards-compatible alias for the previous name.
+_NO_REDIRECT_OPENER = _NO_PROXY_NO_REDIRECT_OPENER
+
 MAX_ATTEMPTS = 2
 RETRY_BACKOFF_SECONDS = 2.0
 

@@ -58,7 +58,7 @@ def _build_context(result: ScanResult, stats: ScanStatistics,
                 "ai": ai,
                 "anchor": known_anchors[f.finding_id],
                 "location": format_location(f),
-                "ai_confidence_percent": round(ai.confidence_score * 100) if ai else None,
+                "ai_confidence_percent": round(ai.confidence_score * 100) if (ai and ai.confidence_score is not None) else None,
                 "correlation": corr if (corr is not None and len(corr.source_finding_ids) > 1) else None,
                 "correlation_others": (
                     [i for i in corr.source_finding_ids if i != f.finding_id]

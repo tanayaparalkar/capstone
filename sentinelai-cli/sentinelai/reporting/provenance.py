@@ -26,6 +26,11 @@ from ..contracts import ScanMetadata
 
 NOT_USED = "not used"
 _EGRESS_WORDS = {"allow": "allowed", "deny": "denied"}
+_RETENTION_WORDS = {
+    "retained": "retained",
+    "not_retained": "not retained",
+    "unverified": "unverified",
+}
 
 
 def ai_used(metadata: ScanMetadata) -> bool:
@@ -45,6 +50,13 @@ def egress_label(metadata: ScanMetadata) -> str:
     return _EGRESS_WORDS.get(metadata.egress_policy, metadata.egress_policy)
 
 
+def retention_label(metadata: ScanMetadata) -> str:
+    """Configured provider retention metadata ('retained', 'not retained', or 'unverified')."""
+    if metadata.retention_status is None:
+        return "unverified"
+    return _RETENTION_WORDS.get(metadata.retention_status, metadata.retention_status)
+
+
 def redaction_count(metadata: ScanMetadata) -> Optional[int]:
     return metadata.redaction.secrets_masked if metadata.redaction is not None else None
 
@@ -57,24 +69,40 @@ def redaction_label(metadata: ScanMetadata) -> str:
 
 
 def provenance_line(metadata: ScanMetadata) -> str:
-    """The one-line form: "AI: groq/llama-3.3-70b · egress: allowed · 3 secrets masked", or "AI: not used"."""
+    """The one-line form: "AI: groq/llama-3.3-70b · egress: allowed · retention: unverified · 3 secrets masked", or "AI: not used"."""
     if not ai_used(metadata):
         return f"AI: {NOT_USED}"
-    return f"AI: {ai_label(metadata)} · egress: {egress_label(metadata)} · {redaction_label(metadata)}"
+    return (
+        f"AI: {ai_label(metadata)} · egress: {egress_label(metadata)} "
+        f"· retention: {retention_label(metadata)} · {redaction_label(metadata)}"
+    )
 
 
 def provenance_items(metadata: ScanMetadata) -> list[tuple[str, str]]:
     """(label, value) pairs for layouts that show facts side by side, such as the HTML header."""
     if not ai_used(metadata):
         return [("AI", NOT_USED)]
-    return [("AI", ai_label(metadata)), ("Egress", egress_label(metadata)), ("Redaction", redaction_label(metadata))]
+    items = [
+        ("AI", ai_label(metadata)),
+        ("Egress", egress_label(metadata)),
+        ("Retention", retention_label(metadata)),
+        ("Redaction", redaction_label(metadata)),
+    ]
+    if metadata.role_provenance:
+        roles_str = ", ".join(f"{rp.role}={rp.provider}" for rp in metadata.role_provenance)
+        items.append(("Roles", roles_str))
+    return items
 
 
 def sarif_properties(metadata: ScanMetadata) -> dict:
     """Run-level SARIF properties, as raw values: null where nothing was recorded."""
-    return {
+    props = {
         "aiProvider": metadata.ai_provider,
         "aiModel": metadata.ai_model,
         "egressPolicy": metadata.egress_policy,
+        "retentionStatus": metadata.retention_status,
         "redactionCount": redaction_count(metadata),
     }
+    if metadata.role_provenance:
+        props["roleProvenance"] = [rp.model_dump() for rp in metadata.role_provenance]
+    return props

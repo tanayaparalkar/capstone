@@ -79,9 +79,11 @@ def _tally_ai_findings(
     for a in ai_findings:
         if a.finding_id in scanner_finding_ids:
             matched_ai_findings += 1
-        confidence_counts[a.confidence_label.value] += 1
+        if a.confidence_label is not None:
+            confidence_counts[a.confidence_label.value] += 1
         verification_counts[a.verification_status.value] = verification_counts.get(a.verification_status.value, 0) + 1
-        scores.append(a.confidence_score)
+        if a.confidence_score is not None:
+            scores.append(a.confidence_score)
 
     confidence = ConfidenceStatistics(
         enriched_count=len(ai_findings),

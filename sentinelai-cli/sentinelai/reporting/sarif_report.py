@@ -217,10 +217,12 @@ def _ai_properties(ai: AIEnrichedFinding) -> dict:
     props: dict = {
         "explanation": ai.explanation,
         "remediation": ai.remediation,
-        "confidenceScore": ai.confidence_score,
-        "confidenceLabel": ai.confidence_label.value,
         "verificationStatus": ai.verification_status.value,
     }
+    if ai.confidence_score is not None:
+        props["confidenceScore"] = ai.confidence_score
+    if ai.confidence_label is not None:
+        props["confidenceLabel"] = ai.confidence_label.value
     if ai.exploit_path:
         props["exploitPath"] = ai.exploit_path
     if ai.impact:

@@ -56,7 +56,7 @@ def post_json(
     threading.Thread(target=run, name=f"{provider}-request", daemon=True).start()
     if not finished.wait(timeout_s):
         raise ProviderError(provider, ProviderErrorKind.TIMEOUT, f"no response within {timeout_s:g}s")
-    latency_ms = (time.perf_counter() - started) * 1000.0
+    latency_ms = max((time.perf_counter() - started) * 1000.0, 0.01)
 
     if "error" in outcome:
         raise _to_provider_error(provider, outcome["error"]) from None
@@ -91,6 +91,8 @@ def _to_provider_error(provider: str, exc: BaseException) -> ProviderError:
     if isinstance(exc, urllib.error.HTTPError):
         # HTTPError before URLError/OSError: it subclasses both.
         status = exc.code
+        if status == 404:
+            return ProviderError(provider, ProviderErrorKind.HTTP, "model not found", status=404)
         if status in (401, 403):
             return ProviderError(provider, ProviderErrorKind.AUTH, status=status)
         if status == 429:
@@ -98,13 +100,16 @@ def _to_provider_error(provider: str, exc: BaseException) -> ProviderError:
                 provider, ProviderErrorKind.RATE_LIMIT, status=status, retry_after=_retry_after(exc)
             )
         if status in (408, 504):
-            return ProviderError(provider, ProviderErrorKind.TIMEOUT, status=status)
-        return ProviderError(provider, ProviderErrorKind.HTTP, status=status)
+            return ProviderError(provider, ProviderErrorKind.TIMEOUT, "timeout", status=status)
+        return ProviderError(provider, ProviderErrorKind.HTTP, f"non-200 (HTTP {status})", status=status)
     if isinstance(exc, (socket.timeout, TimeoutError)) or (
         isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, (socket.timeout, TimeoutError))
     ):
-        return ProviderError(provider, ProviderErrorKind.TIMEOUT, "socket timed out")
+        return ProviderError(provider, ProviderErrorKind.TIMEOUT, "timeout")
     if isinstance(exc, (urllib.error.URLError, OSError)):
+        reason_str = str(getattr(exc, "reason", exc)).lower()
+        if "refused" in reason_str or getattr(getattr(exc, "reason", None), "errno", None) in (111, 10061, 61):
+            return ProviderError(provider, ProviderErrorKind.TRANSPORT, "connection refused")
         return ProviderError(provider, ProviderErrorKind.TRANSPORT, type(exc).__name__)
     return ProviderError(provider, ProviderErrorKind.TRANSPORT, f"unexpected {type(exc).__name__}")
 

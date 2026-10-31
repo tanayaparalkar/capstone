@@ -60,6 +60,8 @@ def render_summary(console: Console, stats: ScanStatistics, metadata: Optional[S
         ]
         if confidence_parts:
             table.add_row("Confidence", ", ".join(confidence_parts))
+        elif stats.confidence.enriched_count > 0:
+            table.add_row("Confidence", "unavailable")
         if stats.verification_counts:
             verif_summary = ", ".join(f"{status} ({count})" for status, count in stats.verification_counts.items())
             table.add_row("Verification", verif_summary)
