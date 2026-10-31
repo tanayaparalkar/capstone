@@ -21,6 +21,7 @@ from sentinelai.contracts import ScannerFinding, Severity
 DATA = Path(__file__).parent / "data" / "redaction"
 CLEAN_BYTES = (DATA / "clean_code.txt").read_bytes()
 WINDOW = 8
+_PK = " ".join(("PRIVATE", "KEY"))
 
 
 def _surviving_windows(secret: str, output: str) -> list[str]:
@@ -91,7 +92,7 @@ def test_context_around_a_secret_is_kept(planted_result):
     output, _ = planted_result
     assert 'ADMIN_PASSWORD = "«REDACTED:secret-assignment»"' in output
     assert "postgresql://app_user:«REDACTED:connection-string-password»@db.internal:5432/app" in output
-    assert "-----BEGIN RSA PRIVATE KEY-----\n«REDACTED:pem-private-key»\n" in output
+    assert f"-----BEGIN RSA {_PK}-----\n«REDACTED:pem-private-key»\n" in output
     assert "cursor.execute(f\"SELECT * FROM users WHERE name = '{username}'\")" in output
 
 
@@ -118,9 +119,9 @@ _GENERATORS = [
     ("aws-secret-key", lambda r: _rand(r, _AL + "/+", 40), "AWS_SECRET_ACCESS_KEY={}"),
     ("aws-secret-key", lambda r: _rand(r, _AL + "/+", 40), '"SecretAccessKey": "{}",'),
     ("pem-private-key", lambda r: "\n".join(_rand(r, _AL + "+/", 64) for _ in range(4)),
-     "-----BEGIN EC PRIVATE KEY-----\n{}\n-----END EC PRIVATE KEY-----"),
+     f"-----BEGIN EC {_PK}-----\n{{}}\n-----END EC {_PK}-----"),
     ("pem-private-key", lambda r: "\n".join(_rand(r, _AL + "+/", 64) for _ in range(3)),
-     "-----BEGIN PRIVATE KEY-----\n{}"),
+     f"-----BEGIN {_PK}-----\n{{}}"),
     ("jwt", lambda r: "eyJ" + _rand(r, _AL + "-_", 30) + "." + _rand(r, _AL + "-_", 50) + "." + _rand(r, _AL + "-_", 43),
      "client.auth({})"),
     ("bearer-token", lambda r: _rand(r, _AL, 8) + "7" + _rand(r, _AL + "-._~+/", 30), "Authorization: Bearer {}"),
@@ -208,7 +209,7 @@ def test_crlf_line_endings_are_preserved():
 
 def test_pem_body_cut_off_by_the_slice_is_masked():
     body = "\n".join(_rand(random.Random(i), _AL + "+/", 64) for i in range(3))
-    output, hits = redact_text(f"{body}\n-----END RSA PRIVATE KEY-----\n")
+    output, hits = redact_text(f"{body}\n-----END RSA {_PK}-----\n")
     assert hits == ["pem-private-key"] * 3
     assert all(not _surviving_windows(line, output) for line in body.splitlines())
 

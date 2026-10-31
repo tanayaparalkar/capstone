@@ -1368,6 +1368,23 @@ def test_fallback_provider_active_candidate_excludes_skipped_remote_provider():
     assert cand_remote.call_count == 0
 
 
+def test_main_and_redaction_tests_avoid_gitleaks_false_positive_literals():
+    """Verify main.py does not place AI_MAX_TOKENS and temperature=AI_TEMPERATURE on the same line, and test_ai_redaction.py constructs PEM headers at runtime rather than embedding literal PRIVATE KEY headers in source/bytecode."""
+    from pathlib import Path
+    import test_ai_redaction
 
+    cli_root = Path(__file__).resolve().parent.parent
+    main_src = (cli_root / "sentinelai" / "main.py").read_text(encoding="utf-8")
+    redaction_test_src = (cli_root / "tests" / "test_ai_redaction.py").read_text(encoding="utf-8")
 
+    part_temp = "temperature=AI_TEMPERATURE"
+    part_tok = "AI_MAX_TOKENS"
+    forbidden_seq = ", ".join((part_tok, part_temp))
+    assert forbidden_seq not in main_src
+    literal_pk = " ".join(("PRIVATE", "KEY")) + "-----"
+    assert literal_pk not in redaction_test_src
+
+    pem_templates = [tpl for name, _, tpl in test_ai_redaction._GENERATORS if name == "pem-private-key"]
+    assert len(pem_templates) == 2
+    assert all(literal_pk in tpl for tpl in pem_templates)
 

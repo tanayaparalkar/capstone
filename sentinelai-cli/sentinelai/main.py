@@ -638,15 +638,23 @@ def scan(
                         else _ai_factory.create_role_generator
                     )
                     role_gen = _role_gen_fn(
-                        ai_config, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE
+                        ai_config,
+                        temperature=AI_TEMPERATURE,
+                        max_tokens=AI_MAX_TOKENS,
                     )
                     generate = guarded_generate(
-                        role_gen, ai_config, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE
+                        role_gen,
+                        ai_config,
+                        temperature=AI_TEMPERATURE,
+                        max_tokens=AI_MAX_TOKENS,
                     )
                 else:
                     llm_provider = create_llm_provider(ai_config)
                     generate = guarded_generate(
-                        llm_provider, ai_config, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE
+                        llm_provider,
+                        ai_config,
+                        temperature=AI_TEMPERATURE,
+                        max_tokens=AI_MAX_TOKENS,
                     )
                 backend_context = build_repository_context(load_repository(str(repo_path)))
                 ai_findings = enrich_findings(
