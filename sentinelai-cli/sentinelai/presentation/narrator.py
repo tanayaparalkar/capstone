@@ -45,6 +45,8 @@ def _confidence_badge(ai: Optional[AIEnrichedFinding]) -> str:
     """Return a Rich markup badge string for the AI confidence level."""
     if ai is None:
         return ""
+    if ai.confidence_score is None or ai.confidence_label is None:
+        return "[dim]UNAVAILABLE[/dim]"
     score = ai.confidence_score
     label = ai.confidence_label.value.upper()
     if score >= 0.8:

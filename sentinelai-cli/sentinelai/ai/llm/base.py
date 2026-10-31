@@ -11,6 +11,8 @@ from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from sentinelai.core.errors import SentinelAIError
+
 
 class LLMResponse(BaseModel):
     """One complete (never partial/streamed) completion, plus whatever usage metadata the provider reported."""
@@ -39,6 +41,10 @@ class LLMProvider(ABC):
     name: ClassVar[str]
     is_local: ClassVar[bool]
     retains_data: ClassVar[Optional[bool]]
+    retention_basis: ClassVar[str] = "unverified_vendor_policy"
+    retention_policy_note: ClassVar[str] = (
+        "Vendor data-retention policy and account configuration cannot be verified at runtime."
+    )
 
     @abstractmethod
     def complete(
@@ -53,10 +59,13 @@ class LLMProvider(ABC):
         raise NotImplementedError
 
 
-class ProviderError(Exception):
+class ProviderError(SentinelAIError):
     """An LLM provider call failed for an operational reason. Safe to log and record in scan metadata.
 
     Never includes request bodies or API keys in the message.
+
+    Note: This is specifically for LLM provider failures. For scanner findings
+    provider failures, see sentinelai.core.errors.ProviderError (or FindingsProviderError).
     """
 
     def __init__(
@@ -88,3 +97,8 @@ class ProviderError(Exception):
         if status is not None and f"HTTP {status}" not in message:
             message += f" (HTTP {status})"
         super().__init__(message)
+
+
+LLMProviderError = ProviderError
+
+__all__ = ["LLMProvider", "LLMResponse", "ProviderError", "LLMProviderError"]

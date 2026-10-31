@@ -37,10 +37,11 @@ PROVENANCE = dict(
     ai_provider="groq",
     ai_model="llama-3.3-70b-versatile",
     egress_policy="allow",
+    retention_status="unverified",
     redaction=RedactionReport(secrets_masked=3, patterns_hit=PATTERNS_HIT, slices_scanned=7),
 )
-NEW_FIELDS = ("ai_provider", "ai_model", "egress_policy", "redaction")
-_SARIF_KEYS = ("aiProvider", "aiModel", "egressPolicy", "redactionCount")
+NEW_FIELDS = ("ai_provider", "ai_model", "egress_policy", "retention_status", "redaction")
+_SARIF_KEYS = ("aiProvider", "aiModel", "egressPolicy", "retentionStatus", "redactionCount")
 
 
 def _finding(finding_id: str = "SENT-001") -> ScannerFinding:
@@ -98,7 +99,9 @@ def _render_all(result: ScanResult) -> dict:
 
 
 def test_provenance_line_when_ai_ran(enriched):
-    assert provenance_line(enriched.metadata) == "AI: groq/llama-3.3-70b-versatile · egress: allowed · 3 secrets masked"
+    assert provenance_line(enriched.metadata) == (
+        "AI: groq/llama-3.3-70b-versatile · egress: allowed · retention: unverified · 3 secrets masked"
+    )
 
 
 def test_provenance_line_for_a_scanner_only_run(scanner_only):
@@ -109,24 +112,33 @@ def test_provenance_line_singular_and_zero():
     one = _result(**{**PROVENANCE, "redaction": RedactionReport(secrets_masked=1, slices_scanned=1)})
     zero = _result(**{**PROVENANCE, "egress_policy": "deny", "redaction": RedactionReport(secrets_masked=0, slices_scanned=4)})
     assert provenance_line(one.metadata).endswith("· 1 secret masked")
-    assert provenance_line(zero.metadata) == "AI: groq/llama-3.3-70b-versatile · egress: denied · 0 secrets masked"
+    assert provenance_line(zero.metadata) == (
+        "AI: groq/llama-3.3-70b-versatile · egress: denied · retention: unverified · 0 secrets masked"
+    )
 
 
 def test_unrecorded_redaction_is_not_shown_as_zero():
-    result = _result(ai_provider="ollama", ai_model="llama3.1:8b", egress_policy="deny")
-    assert provenance_line(result.metadata) == "AI: ollama/llama3.1:8b · egress: denied · redaction not applied"
+    result = _result(ai_provider="ollama", ai_model="llama3.1:8b", egress_policy="deny", retention_status="not_retained")
+    assert provenance_line(result.metadata) == (
+        "AI: ollama/llama3.1:8b · egress: denied · retention: not retained · redaction not applied"
+    )
 
 
 def test_missing_model_and_egress_are_stated():
     result = _result(ai_provider="ollama")
-    assert provenance_line(result.metadata) == "AI: ollama/unknown model · egress: not recorded · redaction not applied"
+    assert provenance_line(result.metadata) == (
+        "AI: ollama/unknown model · egress: not recorded · retention: unverified · redaction not applied"
+    )
 
 
 # ---- terminal ----
 
 
 def test_terminal_summary_with_provenance(enriched):
-    assert "AI: groq/llama-3.3-70b-versatile · egress: allowed · 3 secrets masked" in _terminal(enriched)
+    assert (
+        "AI: groq/llama-3.3-70b-versatile · egress: allowed · retention: unverified · 3 secrets masked"
+        in _terminal(enriched)
+    )
 
 
 def test_terminal_summary_without_provenance(scanner_only):
@@ -150,7 +162,7 @@ def test_terminal_summary_without_metadata_keeps_its_old_shape(enriched):
 def test_markdown_metadata_line_under_the_title(enriched):
     lines = to_markdown(enriched, calculate_statistics(enriched)).splitlines()
     assert lines[0] == "# SentinelAI Security Report"
-    assert lines[2] == "*AI: groq/llama-3.3-70b-versatile · egress: allowed · 3 secrets masked*"
+    assert lines[2] == "*AI: groq/llama-3.3-70b-versatile · egress: allowed · retention: unverified · 3 secrets masked*"
 
 
 def test_markdown_metadata_line_without_provenance(scanner_only):
@@ -170,6 +182,7 @@ def test_html_header_shows_provenance_beside_scan_metadata(enriched):
     assert "<strong>Repository:</strong> demo-app" in header
     assert "<strong>AI:</strong> groq/llama-3.3-70b-versatile" in header
     assert "<strong>Egress:</strong> allowed" in header
+    assert "<strong>Retention:</strong> unverified" in header
     assert "<strong>Redaction:</strong> 3 secrets masked" in header
 
 
@@ -177,6 +190,7 @@ def test_html_header_without_provenance(scanner_only):
     header = _header(to_html(scanner_only, calculate_statistics(scanner_only)))
     assert "<strong>AI:</strong> not used" in header
     assert "Egress:" not in header
+    assert "Retention:" not in header
 
 
 def test_html_escapes_the_model_name():
@@ -190,7 +204,9 @@ def test_html_escapes_the_model_name():
 
 def test_json_carries_the_fields_as_is_except_pattern_names(enriched):
     scan = json.loads(to_json(enriched, calculate_statistics(enriched)))["scan"]
-    assert (scan["ai_provider"], scan["ai_model"], scan["egress_policy"]) == ("groq", "llama-3.3-70b-versatile", "allow")
+    assert (scan["ai_provider"], scan["ai_model"], scan["egress_policy"], scan["retention_status"]) == (
+        "groq", "llama-3.3-70b-versatile", "allow", "unverified",
+    )
     assert scan["redaction"] == {"secrets_masked": 3, "slices_scanned": 7}
 
 
@@ -203,8 +219,13 @@ def test_json_report_round_trips_provenance(enriched, tmp_path):
     path = tmp_path / "report.json"
     path.write_text(to_json(enriched, calculate_statistics(enriched)), encoding="utf-8")
     loaded, _ = load_scan_result(path)
-    assert (loaded.metadata.ai_provider, loaded.metadata.ai_model, loaded.metadata.egress_policy) == (
-        "groq", "llama-3.3-70b-versatile", "allow",
+    assert (
+        loaded.metadata.ai_provider,
+        loaded.metadata.ai_model,
+        loaded.metadata.egress_policy,
+        loaded.metadata.retention_status,
+    ) == (
+        "groq", "llama-3.3-70b-versatile", "allow", "unverified",
     )
     assert loaded.metadata.redaction.secrets_masked == 3
     assert loaded.metadata.redaction.patterns_hit == []
@@ -215,7 +236,7 @@ def test_report_command_rerenders_provenance(enriched, tmp_path):
     path.write_text(to_json(enriched, calculate_statistics(enriched)), encoding="utf-8")
     result = runner.invoke(app, ["report", str(path), "--format", "markdown"])
     assert result.exit_code == 0, result.stderr
-    assert "*AI: groq/llama-3.3-70b-versatile · egress: allowed · 3 secrets masked*" in result.stdout
+    assert "*AI: groq/llama-3.3-70b-versatile · egress: allowed · retention: unverified · 3 secrets masked*" in result.stdout
 
 
 # ---- sarif ----
@@ -228,6 +249,7 @@ def test_sarif_provenance_is_in_the_run_level_property_bag(enriched):
         "aiProvider": "groq",
         "aiModel": "llama-3.3-70b-versatile",
         "egressPolicy": "allow",
+        "retentionStatus": "unverified",
         "redactionCount": 3,
     }
 
@@ -327,7 +349,9 @@ def test_enriched_scan_records_the_provider_that_actually_ran(cli, monkeypatch, 
     assert result.exit_code == 0, result.stderr
     scan = json.loads(result.stdout)["scan"]
     # The resolved provider; the legacy model variable is still the ollama default.
-    assert (scan["ai_provider"], scan["ai_model"], scan["egress_policy"]) == ("ollama", "fake-llm", "deny")
+    assert (scan["ai_provider"], scan["ai_model"], scan["egress_policy"], scan["retention_status"]) == (
+        "ollama", "fake-llm", "deny", "not_retained",
+    )
     assert scan["redaction"] == {"secrets_masked": 0, "slices_scanned": 0}
 
 
@@ -335,7 +359,9 @@ def test_enriched_terminal_scan_shows_the_line(cli, monkeypatch, tmp_path):
     _enable_fake_ai(monkeypatch, cli)
     result = runner.invoke(app, ["scan", str(tmp_path)])
     assert result.exit_code == 0, result.stderr
-    assert "AI: ollama/fake-llm · egress: denied · 0 secrets masked" in " ".join(result.stdout.split())
+    assert "AI: ollama/fake-llm · egress: denied · retention: not retained · 0 secrets masked" in " ".join(
+        result.stdout.split()
+    )
 
 
 # ---- regression: `fix` calls scan() as a function ----

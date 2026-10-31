@@ -105,6 +105,7 @@ from .agents.critic import critique
 from .agents.evidence_analyst import assess_evidence
 from .agents.exploit_remediation_analyst import assess_exploit_and_remediation
 from .agents.explainer import LLMFn
+from .agents.schemas import CriticAssessment
 from .agents.synthesizer import build_verifier_input, synthesize
 from .config import get_settings
 from .llm_response import LLMResponse
@@ -115,7 +116,10 @@ from .retrieval import RetrievedChunk, Retriever, retrieve_context
 # logger name as sentinelai.main / sentinelai.providers.live_provider.
 logger = logging.getLogger("sentinelai")
 
-ConfidenceScorerFn = Callable[[ScannerFinding, list[RetrievedChunk]], tuple[float, ConfidenceLabel]]
+ConfidenceScorerFn = Callable[
+    [ScannerFinding, list[RetrievedChunk]],
+    tuple[Optional[float], Optional[ConfidenceLabel]],
+]
 VerifierFn = Callable[[ScannerFinding, LLMResponse], VerificationStatus]
 
 
@@ -127,6 +131,7 @@ def _enrich_one(
     score_confidence: ConfidenceScorerFn,
     verify_finding: VerifierFn,
     settings,
+    role_generates: Optional[dict[str, LLMFn]] = None,
 ) -> AIEnrichedFinding:
     """Run the three agent stages plus deterministic synthesis for one finding.
 
@@ -135,21 +140,92 @@ def _enrich_one(
     critic reviews both prior outputs. Exactly three generate() calls happen
     here - one per stage - and synthesis makes none.
     """
+    if hasattr(generate, "reset_for_finding"):
+        generate.reset_for_finding()
+
+    if role_generates:
+        is_role_separated = True
+        gen_discovery = role_generates.get("discovery", generate)
+        gen_remediation = role_generates.get("remediation", generate)
+        gen_verification = role_generates.get("verification", generate)
+    else:
+        for_role = getattr(generate, "for_role", None)
+        if callable(for_role):
+            is_role_separated = True
+            gen_discovery = for_role("discovery")
+            gen_remediation = for_role("remediation")
+            gen_verification = for_role("verification")
+        else:
+            is_role_separated = False
+            gen_discovery = generate
+            gen_remediation = generate
+            gen_verification = generate
+
     chunks = retrieve_context(finding, ctx, retriever, settings.retrieval_top_k)
 
-    # LLM call 1 of 3.
-    evidence = assess_evidence(finding, ctx, chunks, generate)
-    # LLM call 2 of 3 - both analysts in one request.
-    assessment = assess_exploit_and_remediation(finding, evidence, ctx, chunks, generate)
-    # LLM call 3 of 3.
-    critic = critique(finding, evidence, assessment, ctx, chunks, generate)
+    # LLM call 1 of 3: Discovery / Evidence assessment.
+    evidence = assess_evidence(finding, ctx, chunks, gen_discovery)
+    # LLM call 2 of 3: Exploit + Remediation proposal (both analysts in one request).
+    assessment = assess_exploit_and_remediation(finding, evidence, ctx, chunks, gen_remediation)
 
-    # Deterministic from here down - no further model calls.
+    # Deterministic scoring and preliminary category/grounding check before independent verification.
     confidence_score, confidence_label = score_confidence(finding, chunks)
     if settings.enable_verification:
         verification_status = verify_finding(finding, build_verifier_input(evidence, assessment))
     else:
         verification_status = VerificationStatus.UNVERIFIED
+
+    # LLM call 3 of 3: Independent verification / Critic.
+    import json
+    from pydantic import ValidationError
+    from sentinelai.contracts import GroundingVerdict
+    from sentinelai.ai.llm.base import ProviderError
+    from sentinelai.ai.llm.roles import IndependentVerificationUnavailableError
+
+    verification_error = None
+    try:
+        if (
+            role_generates is not None
+            and "verification" in role_generates
+            and "discovery" in role_generates
+            and gen_verification is gen_discovery
+        ):
+            raise IndependentVerificationUnavailableError(
+                getattr(gen_discovery, "provider_name", "same_provider"),
+                reason="verification callable must be distinct from discovery callable",
+            )
+        critic = critique(finding, evidence, assessment, ctx, chunks, gen_verification)
+    except Exception as exc:
+        if isinstance(exc, IndependentVerificationUnavailableError) or (
+            is_role_separated and isinstance(exc, (ProviderError, json.JSONDecodeError, ValidationError))
+        ):
+            logger.warning(
+                "AI pipeline: independent verification unavailable on finding_id=%s: %s",
+                finding.finding_id,
+                exc,
+            )
+            verification_error = exc
+            safe_reason = (
+                str(exc)
+                if isinstance(exc, (IndependentVerificationUnavailableError, ProviderError))
+                else f"verifier returned invalid structured output ({type(exc).__name__})"
+            )
+            critic = CriticAssessment(
+                verdict=GroundingVerdict.INSUFFICIENT_EVIDENCE,
+                supported_claims=[],
+                unsupported_claims=[f"Independent verification unavailable: {safe_reason}"],
+            )
+        else:
+            raise
+
+    # Fail closed on verification status if independent verification failed or found insufficient evidence.
+    if not settings.enable_verification or verification_error is not None:
+        verification_status = VerificationStatus.UNVERIFIED
+    elif (
+        critic.verdict == GroundingVerdict.INSUFFICIENT_EVIDENCE
+        and verification_status == VerificationStatus.VERIFIED
+    ):
+        verification_status = VerificationStatus.INSUFFICIENT_EVIDENCE
 
     return synthesize(
         finding=finding,
@@ -173,6 +249,7 @@ def enrich_findings(
     repository_context: Optional[RepositoryContext] = None,
     correlated_findings: Optional[list[CorrelatedFinding]] = None,
     on_failure: Optional[Callable[[str, Exception], None]] = None,
+    role_generates: Optional[dict[str, LLMFn]] = None,
 ) -> list[AIEnrichedFinding]:
     ctx = repository_context or RepositoryContext()
 
@@ -198,7 +275,14 @@ def enrich_findings(
     for finding in scanner_findings:
         try:
             enriched = _enrich_one(
-                finding, ctx, retriever, generate, score_confidence, verify_finding, settings
+                finding,
+                ctx,
+                retriever,
+                generate,
+                score_confidence,
+                verify_finding,
+                settings,
+                role_generates=role_generates,
             )
             group = group_by_canonical.get(finding.finding_id)
             if group is not None:

@@ -144,8 +144,8 @@ def test_environment_is_read_on_every_call(monkeypatch):
 @pytest.mark.parametrize(
     "overrides,env,message",
     [
-        ({"provider": "openai"}, {}, "--ai-provider must be one of ollama, groq, gemini, mock; got 'openai'"),
-        ({}, {PROVIDER_ENV: "claude"}, "SENTINELAI_AI_PROVIDER must be one of ollama, groq, gemini, mock; got 'claude'"),
+        ({"provider": "openai"}, {}, "--ai-provider must be one of"),
+        ({}, {PROVIDER_ENV: "claude"}, "SENTINELAI_AI_PROVIDER must be one of"),
         ({"provider": ""}, {}, "--ai-provider must be one of"),
         ({"egress": "maybe"}, {}, "--egress must be one of allow, deny; got 'maybe'"),
         ({}, {EGRESS_ENV: "yes"}, "SENTINELAI_EGRESS must be one of allow, deny; got 'yes'"),
@@ -192,7 +192,7 @@ def test_unknown_override_key_is_a_programming_error():
 def test_registry_covers_every_configurable_provider():
     from sentinelai.contracts import AIConfig
 
-    assert set(PROVIDERS) == {"ollama", "groq", "gemini", "mock"}
+    assert set(PROVIDERS) == {"ollama", "groq", "gemini", "mock", "grok", "nvidia"}
     assert PROVIDERS["mock"].provider_class is MockLLMProvider
     AIConfig(provider="mock", model=PROVIDERS["mock"].default_model)
 
@@ -203,7 +203,7 @@ def test_registry_covers_every_configurable_provider():
 @pytest.mark.parametrize(
     "args,env,message",
     [
-        (["--ai-provider", "openai"], {}, "--ai-provider must be one of ollama, groq, gemini, mock; got 'openai'"),
+        (["--ai-provider", "openai"], {}, "--ai-provider must be one of"),
         (["--egress", "sometimes"], {}, "--egress must be one of allow, deny; got 'sometimes'"),
         (["--ai-provider", "mock", "--ai-model", ""], {}, "--ai-model must not be empty"),
         (["--ai-provider", "groq", "--egress", "allow"], {}, "groq needs GROQ_API_KEY set in the environment"),

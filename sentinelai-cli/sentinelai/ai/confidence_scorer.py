@@ -48,6 +48,7 @@ rejected for scanner_reliability above - dropped so the signature
 reflects exactly what this heuristic actually uses.
 """
 import logging
+from typing import Optional
 
 from sentinelai.contracts import ConfidenceLabel, ScannerFinding
 
@@ -70,7 +71,14 @@ def _evidence_strength(finding: ScannerFinding) -> float:
 def score_confidence(
     finding: ScannerFinding,
     retrieved_chunks: list[RetrievedChunk],
-) -> tuple[float, ConfidenceLabel]:
+) -> tuple[Optional[float], Optional[ConfidenceLabel]]:
+    if not retrieved_chunks:
+        logger.debug(
+            "confidence: finding_id=%s unscored (no retrieved chunks)",
+            finding.finding_id,
+        )
+        return None, None
+
     signals = [_retrieval_relevance(retrieved_chunks), _evidence_strength(finding)]
     score = sum(signals) / len(signals)
 

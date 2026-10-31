@@ -91,3 +91,15 @@ SentinelAI_Capstone_Report.*
 # publishing a file it is already tracking.
 /PAPER_RESULTS.md
 /POLISH_REPORT.md
+
+# Local environment files at the repository root. sentinelai-cli/.gitignore
+# already covers sentinelai-cli/.env; the root was not covered, so a .env left
+# here was untracked but NOT ignored - one `git add -A` away from being
+# published. Root-anchored so only these two paths are matched.
+#
+# /.env.* would also match the .env.example template, so it is negated back
+# in: the template carries no values and must stay visible to Git even if it
+# is ever removed from the index.
+/.env
+/.env.*
+!/.env.example

@@ -68,13 +68,32 @@ class EgressViolation(Exception):
         super().__init__(f"egress {check} violation: {message}")
 
 
-def assert_safe(payload: str, cfg: AIConfig, provider: LLMProvider, *, safety_factor: float = SAFETY_FACTOR) -> None:
+def assert_safe(
+    payload: str,
+    cfg: AIConfig,
+    provider: LLMProvider,
+    *,
+    safety_factor: float = SAFETY_FACTOR,
+    system: Optional[str] = None,
+) -> None:
     """Raises EgressViolation. Returns None on success."""
     _check_policy(cfg, provider)
     if not isinstance(payload, str):
         raise EgressViolation("secrets", f"payload is {type(payload).__name__}, not str; it cannot be verified")
     _check_secrets(payload)
     _check_size(payload, cfg, safety_factor)
+    if system is not None:
+        if not isinstance(system, str):
+            raise EgressViolation("secrets", f"system is {type(system).__name__}, not str; it cannot be verified")
+        _check_secrets(system)
+        limit = cfg.max_context_chars * safety_factor
+        if not limit >= 0:
+            raise EgressViolation("size", "size limit is not a valid number")
+        if len(payload) + len(system) > limit:
+            raise EgressViolation(
+                "size",
+                f"combined payload is {len(payload) + len(system)} characters; the limit is {int(limit)}",
+            )
 
 
 def _check_policy(cfg: AIConfig, provider: LLMProvider) -> None:

@@ -46,6 +46,8 @@ class MockLLMProvider(LLMProvider):
     name: ClassVar[str] = "mock"
     is_local: ClassVar[bool] = True
     retains_data: ClassVar[Optional[bool]] = False
+    retention_basis: ClassVar[str] = "in_memory_test_double"
+    retention_policy_note: ClassVar[str] = "In-memory test double only; no external transmission."
 
     def __init__(self, data_path: Optional[Path] = None) -> None:
         raw = json.loads((data_path or DEFAULT_MOCK_RESPONSE_PATH).read_text(encoding="utf-8"))

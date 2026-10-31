@@ -113,11 +113,32 @@ import urllib.request
 
 from sentinelai.core.errors import AIEnrichmentError
 
+from sentinelai.contracts import AIConfig
+
+from .egress import assert_safe
+from .llm.ollama import OllamaProvider
 from .local_endpoint import validate_local_endpoint
 from .ollama_http import MAX_ATTEMPTS, read_with_retry
 from .retrieval import EmbeddingFn
 
 _REQUEST_TIMEOUT_SECONDS = 120
+
+# Batch and payload ceilings for one /api/embed call.
+#
+# Both are chosen from what this pipeline actually sends, measured rather than
+# guessed. The largest real batch is the knowledge-base index build: 10 entries
+# totalling 5,260 characters. A retrieval query is a single text, 48-465
+# characters on the benchmark fixture. The limits below leave roughly an order
+# of magnitude of headroom over both, so nothing the project sends today is
+# affected, while a pathological input - a minified file, a runaway loop
+# appending to a batch - is refused rather than posted.
+#
+# Per-text length is NOT fixed here: it comes from AIConfig.max_context_chars
+# (default 2,000) via the scan session, so the one existing knob keeps governing
+# how much source text may be used for context, on the embedding leg as well as
+# the prompt leg.
+_MAX_BATCH_TEXTS = 128          # vs 10 actually sent
+_MAX_TOTAL_CHARS = 32_768       # vs 5,260 actually sent
 
 _DEDICATED_MODEL_HINT = (
     "Ollama's /api/embed only accepts a dedicated embedding model; a text-generation model "
@@ -127,6 +148,109 @@ _DEDICATED_MODEL_HINT = (
     "Leave SENTINELAI_AI_LLM_MODEL pointing at your generation model - the two settings name "
     "two different models and must not be set to the same value."
 )
+
+
+def _prepare_texts(texts: list[str], model: str) -> list[str]:
+    """Redact, bound and gate every text, returning exactly what may be serialized.
+
+    The order matters and mirrors ai/prompt_builder.py's generation path:
+    redact first, then bound, then assert. Redacting first is not cosmetic -
+    measured on the benchmark fixture, 2 of 23 retrieval queries carry content
+    the egress gate itself classifies as a secret (a GitLeaks generic-api-key
+    finding and a Bandit B105 hardcoded password), because the query is built
+    from the finding's raw_evidence. Gating before redacting would refuse those
+    two enrichments instead of masking them.
+
+    Raises AIEnrichmentError for a bounds violation and EgressViolation from the
+    gate. Both are operational faults: ai/pipeline.py records them per finding
+    and leaves that finding unenriched. Neither becomes a scanner finding, and
+    neither message carries a secret value - the gate reports pattern names
+    only, and the bounds errors report counts only.
+    """
+    from .prompt_builder import current_scan_session  # local: avoids an import cycle at module load
+
+    if len(texts) > _MAX_BATCH_TEXTS:
+        raise AIEnrichmentError(
+            f"embedding batch has {len(texts)} texts; the limit is {_MAX_BATCH_TEXTS}"
+        )
+
+    session = current_scan_session()
+    limit = session.max_chars
+
+    # AIConfig.max_context_chars is Field(2000, ge=0), so zero is contract-legal.
+    # It must not reach the truncation below: text[:0] turns every input into an
+    # empty string, the total check then trivially passes, and an embedding
+    # request carrying nothing is sent - input silently discarded and a vector
+    # returned for content that was never submitted. Refused here instead, as a
+    # configuration fault. Not reachable from the CLI today (nothing reads this
+    # field from the environment and resolve_config does not set it), so this
+    # guards programmatic construction.
+    if limit <= 0:
+        raise AIEnrichmentError(
+            f"max_context_chars must be positive to embed anything; got {limit}"
+        )
+
+    # Redacted against the scan's own SecretIndex when one exists, so the query
+    # is masked against the same secrets the prompts are. path/line_start are
+    # None because a query is assembled from several finding fields rather than
+    # lifted from one file region, so there is no single location to anchor the
+    # index's positional entries to; the regex patterns still apply in full.
+    redacted = [session.redact(text, None, None) for text in texts]
+
+    # Truncation, not rejection, for an over-long single text: a 2,000-character
+    # ceiling is a context-budget decision rather than a safety boundary, and
+    # silently dropping the text would change retrieval results more than
+    # shortening it does. Deterministic - same input, same prefix, every time.
+    bounded = [text[:limit] for text in redacted]
+
+    # Separators are counted because the gate below measures "\n".join(bounded),
+    # not the texts in isolation. Without them the two limits disagree by up to
+    # _MAX_BATCH_TEXTS - 1 characters: a batch inside that window passed this
+    # check and was then refused by the gate as a size violation, which reported
+    # an egress fault for what is really a bounds overrun. Measured at the
+    # boundary - 128 texts of 256 characters is 32,768 here but 32,895 joined.
+    joined_length = sum(len(text) for text in bounded) + max(0, len(bounded) - 1)
+    if joined_length > _MAX_TOTAL_CHARS:
+        raise AIEnrichmentError(
+            f"embedding payload is {joined_length} characters across {len(bounded)} texts; "
+            f"the limit is {_MAX_TOTAL_CHARS}"
+        )
+
+    # One assertion over exactly the text that is about to be serialized.
+    #
+    # WHAT THIS CALL DOES, AND WHAT IT DOES NOT. On this path assert_safe
+    # contributes its SECRETS re-scan and its SIZE ceiling. Its POLICY check is
+    # predetermined and cannot fail here: _check_policy compares
+    # provider.name against cfg.provider and consults provider.is_local, and all
+    # three values are fixed by this function - OllamaProvider.name is the
+    # ClassVar "ollama", cfg.provider is the literal "ollama" below, and
+    # OllamaProvider.is_local is the ClassVar True. The gate is never told the
+    # destination URL; ai/egress/guard.py does not take one.
+    #
+    # So this call must NOT be read as validating where the request goes. That
+    # guarantee comes from make_ollama_embed_fn's validate_local_endpoint(host)
+    # above, which refuses any non-loopback host before this closure exists, and
+    # from ai/ollama_http.py, which refuses redirects and disables proxies so the
+    # validated address is also the address finally contacted.
+    #
+    # Making the gate genuinely destination-aware means giving it the host and
+    # changing its signature, which belongs with the local/hosted transport split
+    # planned for P5 rather than here.
+    #
+    # The config describes the embedding leg, not the generation leg: embeddings
+    # always go to the local Ollama server even when generation uses Groq or
+    # Gemini, so reusing the generation AIConfig would make the provider-name
+    # check fail every hosted run.
+    #
+    # safety_factor is derived so the gate's size ceiling equals _MAX_TOTAL_CHARS
+    # rather than contradicting it: the gate's default factor is tuned for a
+    # single prompt, and a legitimate 10-entry batch exceeds it. limit is
+    # guaranteed positive by the check above, so this cannot divide by zero.
+    cfg = AIConfig(provider="ollama", model=model, egress="deny", max_context_chars=limit)
+    assert_safe(
+        "\n".join(bounded), cfg, OllamaProvider, safety_factor=_MAX_TOTAL_CHARS / limit
+    )
+    return bounded
 
 
 def make_ollama_embed_fn(
@@ -159,7 +283,16 @@ def make_ollama_embed_fn(
         if not texts:
             return []
 
-        payload = json.dumps({"model": model, "input": texts}).encode("utf-8")
+        # Redaction, bounds and the egress gate run here, inside embed(), rather
+        # than in a wrapper around it. Both callers reach the network through
+        # this one function - InMemoryRetriever.__init__ for the knowledge-base
+        # index and InMemoryRetriever.retrieve for the query built from a
+        # finding's raw_evidence - and so does any direct caller of
+        # make_ollama_embed_fn(). Enforcing at the wrapper would leave that
+        # third path open; enforcing here closes it by construction.
+        safe_texts = _prepare_texts(texts, model)
+
+        payload = json.dumps({"model": model, "input": safe_texts}).encode("utf-8")
         request = urllib.request.Request(
             f"{host}/api/embed",
             data=payload,

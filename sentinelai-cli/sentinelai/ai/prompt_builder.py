@@ -180,11 +180,89 @@ def _current_session() -> ScanSession:
     return ScanSession(SecretIndex(), lines, lines, AIConfig.model_fields["max_context_chars"].default)
 
 
+def current_scan_session() -> ScanSession:
+    """The active ScanSession, or a throwaway one carrying the same defaults.
+
+    Public because ai/embeddings_ollama.py needs the same per-scan SecretIndex
+    and char limit this module uses for prompts: the retrieval query it embeds
+    is built from the same finding evidence, so redacting it against a
+    different index - or none - would mask a different set of secrets than the
+    prompt path masks. Reaching into _current_session() from another module
+    would couple to a private name; this is that one supported accessor.
+
+    Outside a scan the throwaway session has an empty SecretIndex, so only the
+    regex patterns in ai/redaction/patterns.py apply. That is the same
+    best-effort fallback a direct prompt caller already gets, and the egress
+    gate still runs afterwards either way.
+    """
+    return _current_session()
+
+
 def guarded_generate(provider: LLMProvider, cfg: AIConfig, *, max_tokens: int, temperature: float) -> Callable[..., str]:
     """The only generate callable the pipeline receives: steps 4 and 5, in that order, with no other path."""
+    if hasattr(provider, "complete_for_role"):
+        def _call_role(
+            role: str,
+            prompt: str,
+            response_schema=None,
+            system: Optional[str] = None,
+            role_max_tokens: Optional[int] = None,
+            role_temperature: Optional[float] = None,
+        ) -> str:
+            return provider.complete_for_role(
+                role,
+                prompt,
+                system=system,
+                max_tokens=role_max_tokens if role_max_tokens is not None else max_tokens,
+                temperature=role_temperature if role_temperature is not None else temperature,
+                assert_safe_fn=assert_safe,
+            ).text
 
-    def generate(prompt: str, response_schema=None) -> str:
-        assert_safe(prompt, cfg, provider)
+        def generate(
+            prompt: str,
+            response_schema=None,
+            system: Optional[str] = None,
+            max_tokens: Optional[int] = None,
+            temperature: Optional[float] = None,
+        ) -> str:
+            return _call_role(
+                "discovery",
+                prompt,
+                response_schema=response_schema,
+                system=system,
+                role_max_tokens=max_tokens,
+                role_temperature=temperature,
+            )
+
+        def _for_role(role: str) -> Callable[..., str]:
+            def _role_generate(
+                prompt: str,
+                response_schema=None,
+                system: Optional[str] = None,
+                max_tokens: Optional[int] = None,
+                temperature: Optional[float] = None,
+            ) -> str:
+                return _call_role(
+                    role,
+                    prompt,
+                    response_schema=response_schema,
+                    system=system,
+                    role_max_tokens=max_tokens,
+                    role_temperature=temperature,
+                )
+            return _role_generate
+
+        generate.for_role = _for_role  # type: ignore[attr-defined]
+        if hasattr(provider, "reset_for_finding"):
+            generate.reset_for_finding = provider.reset_for_finding  # type: ignore[attr-defined]
+        return generate
+
+    def generate(prompt: str, response_schema=None, system: Optional[str] = None) -> str:
+        effective_cfg = getattr(provider, "active_config", cfg)
+        if system is not None:
+            assert_safe(prompt, effective_cfg, provider, system=system)
+            return provider.complete(prompt, system=system, max_tokens=max_tokens, temperature=temperature).text
+        assert_safe(prompt, effective_cfg, provider)
         return provider.complete(prompt, max_tokens=max_tokens, temperature=temperature).text
 
     return generate

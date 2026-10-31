@@ -37,6 +37,11 @@ class OllamaProvider(LLMProvider):
     name: ClassVar[str] = "ollama"
     is_local: ClassVar[bool] = True
     retains_data: ClassVar[Optional[bool]] = False
+    retention_basis: ClassVar[str] = "local_loopback_unverified_host_persistence"
+    retention_policy_note: ClassVar[str] = (
+        "Processed locally via loopback endpoint (no remote vendor transmission); does not "
+        "verify the absence of local server logs, model cache, or host disk persistence."
+    )
 
     def __init__(
         self,

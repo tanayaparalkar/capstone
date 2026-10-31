@@ -54,16 +54,27 @@ from rich.markup import escape
 
 from . import __version__
 from .ai import enrich_findings
-from .ai.config import AIConfigError, ai_models_configured, get_settings, resolve_config
+from .ai.config import PROVIDERS, AIConfigError, ai_models_configured, get_settings, resolve_config
 from .ai.confidence_scorer import score_confidence
-from .ai.factory import create_llm_provider, create_retriever_for_scan
+from .ai.factory import create_llm_provider, create_retriever_for_scan, create_role_generator
 from .ai.prompt_builder import ai_fault, guarded_generate, scan_session
 from .ai.repository_context import from_backend_context
 from .ai.verifier import verify_finding
 from .backend.context_builder import build_repository_context
 from .patching import run_patches
 from .backend.loader import load_repository
-from .contracts import AIConfig, ScanMode, ScannerTier, ScanResult, Severity
+from .contracts import (
+    AIConfig,
+    ScanMode,
+    ScannerTier,
+    ScanResult,
+    Severity,
+    aggregate_retention_status,
+    retention_status_from_provider,
+)
+
+_default_create_llm_provider = create_llm_provider
+_default_create_role_generator = create_role_generator
 from .core import ExitCode, exceeds_fail_on_threshold, filter_by_severity
 from .core.errors import AIEnrichmentError
 from .core.observability import log_duration
@@ -614,12 +625,29 @@ def scan(
         # rather than changing the provider contract for it.
         logger.info("AI enrichment started: %d findings", len(result.scanner_findings))
         faults = []
+        llm_provider = None
+        role_gen = None
         # The SecretIndex is built here, once, from every scanner finding, before any prompt.
         with scan_session(result.scanner_findings, ai_config) as session:
             try:
-                generate = guarded_generate(
-                    create_llm_provider(ai_config), ai_config, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE
-                )
+                if ai_config.role_chains and create_llm_provider is _default_create_llm_provider:
+                    from .ai import factory as _ai_factory
+                    _role_gen_fn = (
+                        create_role_generator
+                        if create_role_generator is not _default_create_role_generator
+                        else _ai_factory.create_role_generator
+                    )
+                    role_gen = _role_gen_fn(
+                        ai_config, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE
+                    )
+                    generate = guarded_generate(
+                        role_gen, ai_config, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE
+                    )
+                else:
+                    llm_provider = create_llm_provider(ai_config)
+                    generate = guarded_generate(
+                        llm_provider, ai_config, max_tokens=AI_MAX_TOKENS, temperature=AI_TEMPERATURE
+                    )
                 backend_context = build_repository_context(load_repository(str(repo_path)))
                 ai_findings = enrich_findings(
                     result.scanner_findings,
@@ -644,11 +672,55 @@ def scan(
                 if not (faults and isinstance(exc, AIEnrichmentError)):
                     faults.append(ai_fault(None, exc))
                 ai_findings = []
+        role_prov_list = []
+        override_retention_status = None
+        if role_gen is not None:
+            role_prov_list = role_gen.get_role_provenance()
+            for rf in role_gen.get_faults():
+                if rf not in faults:
+                    faults.append(rf)
+            disc_entry = next((rp for rp in role_prov_list if rp.role == "discovery"), None)
+            primary_entry = disc_entry or (role_prov_list[0] if role_prov_list else None)
+            active_name = (
+                primary_entry.provider
+                if primary_entry is not None
+                else (role_gen.active_discovery_provider or ai_config.provider)
+            )
+            active_model = (
+                primary_entry.model
+                if primary_entry is not None
+                else (role_gen.active_discovery_model or ai_config.model)
+            )
+            spec = PROVIDERS.get(active_name)
+            active_retains = spec.retains_data if spec is not None else None
+            active_is_local = spec.is_local if spec is not None else None
+            if role_prov_list:
+                override_retention_status = aggregate_retention_status(
+                    [rp.retention_status for rp in role_prov_list]
+                )
+        elif llm_provider is not None:
+            active_name = getattr(llm_provider, "active_provider_name", ai_config.provider)
+            active_model = getattr(llm_provider, "active_model_name", ai_config.model)
+            active_retains = getattr(llm_provider, "retains_data", None)
+            active_is_local = getattr(llm_provider, "is_local", None)
+            if hasattr(llm_provider, "fallback_faults"):
+                for ff in llm_provider.fallback_faults:
+                    if ff not in faults:
+                        faults.append(ff)
+        else:
+            active_name = ai_config.provider
+            active_model = ai_config.model
+            spec = PROVIDERS.get(ai_config.provider)
+            active_retains = spec.retains_data if spec is not None else None
+            active_is_local = spec.is_local if spec is not None else None
         provenance = {
-            "ai_provider": ai_config.provider,
-            "ai_model": ai_config.model,
+            "ai_provider": active_name,
+            "ai_model": active_model,
             "egress_policy": ai_config.egress,
+            "retention_status": override_retention_status
+            or retention_status_from_provider(active_retains, is_local=active_is_local),
             "redaction": session.redaction_report(),
+            "role_provenance": role_prov_list,
             "ai_faults": faults,
         }
         result = result.model_copy(

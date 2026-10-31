@@ -3,7 +3,7 @@ ProviderError: the one exception an LLMProvider raises for an operational fault.
 """
 from enum import Enum
 
-from .base import ProviderError
+from .base import LLMProviderError, ProviderError
 
 
 class ProviderErrorKind(str, Enum):
@@ -16,4 +16,4 @@ class ProviderErrorKind(str, Enum):
     INVALID_RESPONSE = "invalid_response"  # 2xx but not the documented response shape
 
 
-__all__ = ["ProviderError", "ProviderErrorKind"]
+__all__ = ["LLMProviderError", "ProviderError", "ProviderErrorKind"]

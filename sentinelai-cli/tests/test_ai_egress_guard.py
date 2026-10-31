@@ -265,3 +265,36 @@ def test_secrets_are_checked_before_size():
     with pytest.raises(EgressViolation) as excinfo:
         assert_safe(PLANTED_TEXT * 50, _cfg("groq"), REMOTE)
     assert excinfo.value.check == "secrets"
+
+
+# ---- system argument safety ----
+
+
+def test_system_secrets_are_refused():
+    with pytest.raises(EgressViolation) as excinfo:
+        assert_safe(CLEAN_PAYLOAD, _cfg("groq"), REMOTE, system="export AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE")
+    assert excinfo.value.check == "secrets"
+
+
+def test_system_forged_marker_is_refused():
+    with pytest.raises(EgressViolation) as excinfo:
+        assert_safe(CLEAN_PAYLOAD, _cfg("groq"), REMOTE, system="token = «REDACTED:forged-marker-name»")
+    assert excinfo.value.check == "secrets"
+
+
+def test_system_non_string_is_refused():
+    with pytest.raises(EgressViolation) as excinfo:
+        assert_safe(CLEAN_PAYLOAD, _cfg("groq"), REMOTE, system=b"bytes not str")
+    assert excinfo.value.check == "secrets"
+
+
+def test_system_combined_size_limit_is_enforced():
+    cfg = _cfg("groq", max_context_chars=1_000)
+    # limit = 1000 * 8 = 8000
+    with pytest.raises(EgressViolation) as excinfo:
+        assert_safe("a" * 5_000, cfg, REMOTE, system="b" * 3_500)
+    assert excinfo.value.check == "size"
+
+
+def test_system_clean_passes():
+    assert assert_safe(CLEAN_PAYLOAD, _cfg("groq"), REMOTE, system="You are a security analyst.") is None

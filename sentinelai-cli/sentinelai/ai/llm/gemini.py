@@ -56,6 +56,12 @@ class GeminiProvider(LLMProvider):
     name: ClassVar[str] = "gemini"
     is_local: ClassVar[bool] = False
     retains_data: ClassVar[Optional[bool]] = None
+    retention_basis: ClassVar[str] = "unverified_project_data_governance"
+    retention_policy_note: ClassVar[str] = (
+        "Google Cloud Vertex AI service-specific data-handling terms distinguish model-training "
+        "restrictions from service and abuse-monitoring storage depending on project settings; "
+        "actual project configuration cannot be verified at runtime."
+    )
 
     def __init__(
         self,

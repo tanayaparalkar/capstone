@@ -16,6 +16,8 @@ from typer.testing import CliRunner
 from agent_fakes import GenerateBackedProvider, make_agent_generate
 from redaction_fixtures import FAKE_GROQ_KEY, OPAQUE
 from redaction_fixtures import PLANTED as PLANTED_ENTRIES
+from sentinelai.ai import prompt_builder
+from sentinelai.ai.egress import EgressViolation
 from sentinelai.ai.llm import LLMResponse, MockLLMProvider
 from sentinelai.ai.llm.errors import ProviderError, ProviderErrorKind
 from sentinelai.contracts import AIConfig, RepositoryInfo, ScanMetadata, ScannerFinding, ScanResult, Severity
@@ -364,3 +366,35 @@ def test_deny_is_enforced_by_the_guard_even_if_resolution_were_bypassed(repo, mo
     faults = report["scan"]["ai_faults"]
     assert faults and all(f["kind"] == "EgressViolation" and "policy" in f["message"] for f in faults)
     assert FAKE_GROQ_KEY not in result.stdout + result.stderr
+
+
+def test_guarded_generate_checks_system_argument_for_secrets():
+    mock = MockLLMProvider()
+    cfg = AIConfig(provider="mock", model="m")
+    generate = prompt_builder.guarded_generate(mock, cfg, max_tokens=100, temperature=0.0)
+    with pytest.raises(EgressViolation) as excinfo:
+        generate("clean prompt", system="export AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE")
+    assert excinfo.value.check == "secrets"
+    assert len(mock.calls) == 0
+
+
+def test_guarded_generate_forwards_clean_system_argument():
+    mock = MockLLMProvider()
+    cfg = AIConfig(provider="mock", model="m")
+    generate = prompt_builder.guarded_generate(mock, cfg, max_tokens=100, temperature=0.0)
+    result = generate("clean prompt", system="clean system instruction")
+    assert isinstance(result, str)
+    assert len(mock.calls) == 1
+    assert mock.calls[0].system == "clean system instruction"
+    assert mock.calls[0].prompt == "clean prompt"
+
+
+def test_guarded_generate_without_system_omits_system():
+    mock = MockLLMProvider()
+    cfg = AIConfig(provider="mock", model="m")
+    generate = prompt_builder.guarded_generate(mock, cfg, max_tokens=100, temperature=0.0)
+    result = generate("clean prompt")
+    assert isinstance(result, str)
+    assert len(mock.calls) == 1
+    assert mock.calls[0].system is None
+    assert mock.calls[0].prompt == "clean prompt"

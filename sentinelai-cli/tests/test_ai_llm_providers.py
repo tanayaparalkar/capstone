@@ -228,6 +228,49 @@ def test_ollama_refuses_a_non_loopback_host_because_is_local_would_be_false(host
     assert excinfo.value.kind is ProviderErrorKind.CONFIGURATION
 
 
+# ---- OLLAMA_HOST env var fallback and precedence ----
+
+
+def test_ollama_host_precedence(monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.3:11434")
+
+    # 1. base_url overrides everything
+    p1 = OllamaProvider("m", base_url="http://127.0.0.1:11434", host="http://127.0.0.2:11434")
+    assert p1.base_url == "http://127.0.0.1:11434"
+
+    # 2. host overrides OLLAMA_HOST
+    p2 = OllamaProvider("m", host="http://127.0.0.2:11434")
+    assert p2.base_url == "http://127.0.0.2:11434"
+
+    # 3. OLLAMA_HOST is used when host and base_url are omitted
+    p3 = OllamaProvider("m")
+    assert p3.base_url == "http://127.0.0.3:11434"
+
+    # 4. default is used when OLLAMA_HOST is unset
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    p4 = OllamaProvider("m")
+    assert p4.base_url == "http://localhost:11434"
+
+
+def test_ollama_host_env_var_loopback_validation(monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "http://ollama.example.com:11434")
+    with pytest.raises(ProviderError) as excinfo:
+        OllamaProvider("m")
+    assert excinfo.value.kind is ProviderErrorKind.CONFIGURATION
+
+    monkeypatch.setenv("OLLAMA_HOST", "192.168.1.1:11434")
+    with pytest.raises(ProviderError) as excinfo:
+        OllamaProvider("m")
+    assert excinfo.value.kind is ProviderErrorKind.CONFIGURATION
+
+    # Valid loopback forms
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+    assert OllamaProvider("m").base_url == "http://127.0.0.1:11434"
+
+    monkeypatch.setenv("OLLAMA_HOST", "127.0.0.1:11434")
+    assert OllamaProvider("m").base_url == "http://127.0.0.1:11434"
+
+
 # ---- HTTP requests ----
 
 

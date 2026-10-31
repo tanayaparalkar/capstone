@@ -128,6 +128,7 @@ from pydantic import BaseModel
 from sentinelai.core.errors import AIEnrichmentError
 
 from .llm_base import LLMProvider
+from .local_endpoint import validate_local_endpoint
 from .ollama_http import MAX_ATTEMPTS, read_with_retry
 
 _REQUEST_TIMEOUT_SECONDS = 120
@@ -232,8 +233,11 @@ class OllamaProvider(LLMProvider):
         the values this module previously hardcoded, so an existing
         two-argument construction is byte-for-byte unchanged.
         """
-        if not host:
-            raise ValueError("host must be a non-empty string")
+        # Re-checked here, not only in ai/config.py's validator, so that direct
+        # construction bypassing AISettings cannot send generation prompts to a
+        # remote endpoint. RemoteEndpointError subclasses ValueError, preserving
+        # the ValueError contract for empty or invalid hosts.
+        host = validate_local_endpoint(host, setting="host")
         if not model:
             raise ValueError("model must be a non-empty string")
         if timeout <= 0:

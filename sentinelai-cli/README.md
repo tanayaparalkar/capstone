@@ -401,6 +401,7 @@ themselves are unset (see "When AI is not configured" below).
 | Variable | Default | Meaning |
 |---|---|---|
 | `SENTINELAI_AI_LLM_HOST` | `http://localhost:11434` | Base URL of the Ollama server (shared by generation and embeddings). |
+| `OLLAMA_HOST` | `http://localhost:11434` | Standard Ollama server environment variable, honored as a fallback if `SENTINELAI_AI_LLM_HOST` is unset. | |
 | `SENTINELAI_AI_RETRIEVAL_TOP_K` | `5` | Number of knowledge-base chunks retrieved per finding. |
 | `SENTINELAI_AI_CONFIDENCE_HIGH_THRESHOLD` | `0.75` | Minimum confidence score (inclusive) mapped to `high`. |
 | `SENTINELAI_AI_CONFIDENCE_MEDIUM_THRESHOLD` | `0.4` | Minimum confidence score (inclusive) mapped to `medium`; below this is `low`. |

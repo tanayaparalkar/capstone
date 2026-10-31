@@ -36,10 +36,17 @@ class GroqProvider(LLMProvider):
     name: ClassVar[str] = "groq"
     is_local: ClassVar[bool] = False
     retains_data: ClassVar[Optional[bool]] = None
+    retention_basis: ClassVar[str] = "unverified_account_zdr_or_default_logging"
+    retention_policy_note: ClassVar[str] = (
+        "Groq documents limited default inference retention for reliability and abuse logging, "
+        "with configurable Zero Data Retention; actual account configuration cannot be verified "
+        "at runtime."
+    )
 
     def __init__(self, model: str, *, timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
         if not model:
             raise ProviderError(self.name, ProviderErrorKind.CONFIGURATION, "no model configured")
+        # GROQ_API_KEY only. Groq is not xAI's Grok; see ai/llm/xai.py.
         api_key = os.environ.get(API_KEY_ENV, "").strip()
         if not api_key:
             raise ProviderError(self.name, ProviderErrorKind.CONFIGURATION, f"{API_KEY_ENV} is not set")
